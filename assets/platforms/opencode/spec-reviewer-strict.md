@@ -33,7 +33,7 @@ material rework; otherwise report at most three material missing decisions.
 For implementation review, read the exact packet and diff files named by the
 parent with `lean_review_read`, `lean_review_list`, and literal `lean_review_grep`;
 built-in `grep` is intentionally unavailable because OpenCode 1.18.23 can expose
-files denied by `read`. Inspect the complete task-owned diff, immediate callers
+files denied by `read`. Inspect the complete declared domain-packet diff, immediate callers
 and callees, state transitions, failure paths, and nearest relevant local helper
 or analogue. Do not edit files, delegate, run a general audit, or repeat broad
 test suites.

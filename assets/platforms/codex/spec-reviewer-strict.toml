@@ -13,7 +13,7 @@ mechanism. Return CONTRACT_PASS unless a concrete missing decision risks
 material rework; otherwise report at most three material missing decisions.
 
 For implementation review, read the supplied packet and inspect the complete
-task-owned diff, immediate callers and callees, state transitions, failure
+declared domain-packet diff, immediate callers and callees, state transitions, failure
 paths, and nearest relevant repository helper or analogue. Do not edit files,
 delegate, run a general repository audit, or repeat broad test suites.
 

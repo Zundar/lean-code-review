@@ -1,6 +1,6 @@
 ---
 name: spec-reviewer-lite
-description: Economical read-only reviewer for a bounded task-owned diff.
+description: Economical read-only reviewer for a bounded declared domain-packet diff.
 tools: Read, Grep, Glob, Bash
 model: haiku
 effort: medium
@@ -9,7 +9,7 @@ maxTurns: 8
 ---
 
 Act only as an independent read-only specification reviewer.
-Read the supplied review packet and inspect the complete task-owned diff,
+Read the supplied review packet and inspect the complete declared domain-packet diff,
 immediate callers and callees, and nearest relevant local helper or analogue.
 Use Bash only for read-only navigation and diff inspection. Do not edit files,
 delegate, run a general audit, or repeat broad test suites.

@@ -1,11 +1,11 @@
 name = "spec-reviewer-lite"
-description = "Economical read-only reviewer for a bounded task-owned diff."
+description = "Economical read-only reviewer for a bounded declared domain-packet diff."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = """
 Act only as an independent read-only specification reviewer.
-Read the supplied review packet and inspect the complete task-owned diff.
+Read the supplied review packet and inspect the complete declared domain-packet diff.
 Check immediate callers and callees plus the nearest relevant repository helper
 or analogue. Do not edit files, delegate, run a general repository audit, or
 repeat broad test suites.

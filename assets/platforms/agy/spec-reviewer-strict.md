@@ -35,7 +35,7 @@ responsibility owner, established dependency direction, and nearest existing
 mechanism. Return CONTRACT_PASS unless a concrete missing decision risks
 material rework; otherwise report at most three material missing decisions.
 
-For final review, inspect the complete task-owned diff, immediate callers and
+For final review, inspect the complete declared domain-packet diff, immediate callers and
 callees, state transitions, failure paths, and nearest relevant helper. Check
 contract compliance, correctness, regressions, meaningful tests, relevant
 security and operational risks, contradictory documentation, a material second

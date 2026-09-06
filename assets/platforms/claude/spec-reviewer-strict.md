@@ -16,7 +16,7 @@ responsibility owner, established dependency direction, and nearest existing
 mechanism. Return CONTRACT_PASS unless a concrete missing decision risks
 material rework; otherwise report at most three material missing decisions.
 
-For implementation review, inspect the complete task-owned diff, immediate
+For implementation review, inspect the complete declared domain-packet diff, immediate
 callers and callees, state transitions, failure paths, and nearest relevant
 local helper or analogue. Use Bash only for read-only navigation and diff
 inspection. Do not edit files, delegate, run a general audit, or repeat broad
