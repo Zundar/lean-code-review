@@ -134,7 +134,11 @@ def session_usage(runtime: Path, backend: str) -> dict | None:
     total = dict.fromkeys(('calls', 'input_tokens', 'cached_input_tokens', 'output_tokens'), 0)
     for path in runtime.glob('review-*.jsonl'):
         counters = []
-        for line in path.read_text().splitlines():
+        try:
+            lines = path.read_text().splitlines()
+        except (OSError, UnicodeError):
+            return None
+        for line in lines:
             try:
                 event = json.loads(line)
             except ValueError:

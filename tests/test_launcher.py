@@ -236,3 +236,6 @@ def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
     events.pop()  # Unknown counters must not turn into zero or a partial session sum.
     assert 'usage' not in launch.review(args)
+    (args.resume / 'review-1.jsonl').write_bytes(b'\xff')
+    result = launch.review(args)
+    assert result['verdict'] == 'PASS' and 'usage' not in result
