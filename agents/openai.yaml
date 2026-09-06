@@ -1,0 +1,13 @@
+interface:
+  display_name: Light Code Reviewer
+  short_description: Lean spec review with one subagent
+  default_prompt: Use $lean-code-review to implement this change and run the smallest
+    sufficient independent review.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  allow_implicit_invocation: true
+  products:
+  - chatgpt
+  - codex
+  - atlas
