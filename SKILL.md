@@ -5,10 +5,10 @@ description: Automatically choose the smallest sufficient independent read-only 
 
 # Lean Code Review
 
-Minimize reviewer calls. Review compatible changes together under one clear
-contract and depth. Split only when combining changes prevents correct depth
-selection or makes the contract ambiguous. Diff size, file count, and number of
-risk domains alone are not reasons to split.
+Minimize reviewer calls. Review compatible changes in the same repository together
+under one clear contract and depth. Split only when combining changes prevents
+correct depth selection, makes the contract ambiguous, or crosses a repository
+boundary. Diff size, file count, and number of risk domains alone are not reasons to split.
 
 Choose by behavioral effect:
 
