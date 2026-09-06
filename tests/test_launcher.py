@@ -184,3 +184,17 @@ def test_uninstall_preflights_parents_and_preserves_matching_project_links(tmp_p
         install.uninstall(ROOT, home)
     assert matching.is_symlink()
     assert (home / '.local/bin/lean-review').is_symlink()
+
+
+def test_large_packet_warns_before_backend_but_small_packet_does_not(tmp_path, capsys):
+    import subprocess
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    artifact = tmp_path / 'diff.patch'
+    for size, warns in ((64 * 1024, False), (64 * 1024 + 1, True)):
+        artifact.write_bytes(b'x' * size)
+        args = SimpleNamespace(repo=tmp_path, artifact=artifact,
+                               sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                               base='0' * 40, target='worktree', backend='crush')
+        with pytest.raises(launch.Blocked, match='independent read-only'):
+            launch.review(args)
+        assert ('REVIEW_SCOPE_WARNING' in capsys.readouterr().err) is warns

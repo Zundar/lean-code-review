@@ -143,6 +143,10 @@ def review(args) -> dict:
     if len(data) > 1024 * 1024:
         raise Blocked('artifact exceeds 1 MiB; provide a smaller task-owned review')
     text = data.decode('utf-8')
+    if len(data) > 64 * 1024:
+        print(f'REVIEW_SCOPE_WARNING: artifact is {len(data)} bytes; split independent risk domains '
+              'into separate packets before review. Keep coupled changes together with a stated reason. '
+              'This is advisory, not a token estimate or a lower-depth recommendation.', file=sys.stderr)
     if not re.fullmatch('[0-9a-f]{40}|[0-9a-f]{64}', args.base):
         raise Blocked('base must be an immutable Git object ID')
     if args.target != 'worktree' and not re.fullmatch('commit:([0-9a-f]{40}|[0-9a-f]{64})', args.target):

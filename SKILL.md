@@ -45,11 +45,23 @@ repository/task responsibilities, not this skill's workflow.
 
 ## Small review packet
 
+Before creating an artifact, group changes by independently verifiable behavior
+and failure mode. Use one packet and one reviewer session per risk domain;
+choose lite/strict separately. Unrelated changes must not inherit strict merely
+because they share a task or commit. Keep coupled changes together when their
+correctness depends on the same invariant; state that dependency in the goal.
+
+A large diff or several independent domains is a signal to split before review,
+not to lower reasoning effort or omit changed bytes. Move-only/reference edits
+are skip only when instruction behavior is unchanged. Record the exact paths
+and input hash of each packet; together they must cover all task-owned changes
+requiring review. Check shared seams once where domains interact.
+
 Bind review to the exact bytes actually inspected.
 
 - Use an immutable Git commit range only when the reviewer has an effective
   read-only tool capable of inspecting the complete range.
-- Otherwise the parent must materialize the complete task-owned diff, including
+- Otherwise the parent must materialize the complete domain-scoped diff, including
   new files, save it as an immutable artifact, calculate its SHA-256, and pass
   the artifact path, digest, base, and target in REVIEW INPUT. Use
   `target:commit:<HEAD>` for committed bytes and `target:worktree` for exact
@@ -86,9 +98,9 @@ summary. Do not guess unlinked reference filenames.
 
 Do not copy the full conversation, successful logs, or unrelated context.
 
-## One independent reviewer
+## One independent reviewer per packet
 
-Use exactly one configured reviewer:
+For each packet, use exactly one configured reviewer:
 - `spec-reviewer-lite` for `lite`;
 - `spec-reviewer-strict` for `strict`.
 
@@ -98,7 +110,7 @@ when isolation cannot be established. Without a credible read-only boundary,
 the verdict is not independent review.
 
 The reviewer profile owns the detailed checklist. It must inspect the complete
-task-owned diff and only nearby code needed to judge it. Changed predicates or
+declared packet diff and only nearby code needed to judge it. Changed predicates or
 state transitions need evidence for the changed case and nearest preserved case
 when applicable.
 
@@ -108,6 +120,10 @@ style-only findings, unrelated refactors, scope expansion, and broad test reruns
 without a concrete missing risk.
 
 ## Narrow recheck
+
+Resume only for finding fixes or requested evidence within the same packet;
+start a fresh session for another risk domain. Do not append unrelated work to
+a completed or blocked session.
 
 The main agent owns fixes. Apply the smallest correction, rerun affected
 evidence, and use the same reviewer for one recheck. A second strict recheck is
