@@ -11,14 +11,13 @@ NEEDS_ARTIFACT = (
 )
 
 def test_skill_uses_git_range_only_with_effective_read_only_git_capability() -> None:
-    skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
-
-    assert "Use an immutable Git commit range only when the reviewer has an effective" in skill
-    assert "read-only tool capable of inspecting the complete range" in skill
-    assert "artifact path, digest, base, and target in REVIEW INPUT" in skill
-    assert "`target:commit:<HEAD>`" in skill
+    skill = " ".join((REPO_ROOT / "SKILL.md").read_text(encoding="utf-8").split())
+    assert "Use a Git range only if the reviewer can read the complete range" in skill
+    assert "exact diff, SHA-256, immutable base/target" in skill
+    assert "materialize an immutable artifact including new files" in skill
     assert "`target:worktree`" in skill
-    assert "PASS is invalid unless the reviewer actually inspected the complete REVIEW" in skill
+    assert "`PASS` covers only inspected bytes" in skill
+    assert "Incomplete input requires `NEEDS_EVIDENCE`" in skill
 
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_agy_reviewer_fails_closed_when_git_range_is_inaccessible(name: str) -> None:

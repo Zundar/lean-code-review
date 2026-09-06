@@ -21,7 +21,7 @@ STRICT_PREFLIGHT_CONTRACT = (
     "ambiguous/no-match behavior. Architecture risk: only canonical source of truth, "
     "responsibility owner, established dependency direction, and nearest existing "
     "mechanism. Return CONTRACT_PASS unless a concrete missing decision risks "
-    "material rework; otherwise report at most three material missing decisions."
+    "material rework; otherwise report material missing decisions."
 )
 
 def test_lite_reviewers_cover_invariant_and_resource_ownership() -> None:
@@ -37,13 +37,7 @@ def test_strict_preflight_is_exceptional_and_contract_bounded() -> None:
     skill = " ".join(
         (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8").split()
     )
-    assert "`strict` gets one final review by default." in skill
-    assert (
-        "persistent-state mutation with unclear target identity, allowed writes, "
-        "preserved truth, or ambiguous/no-match behavior. Otherwise skip it."
-    ) in skill
-    assert "a new source of truth or shared mechanism with unclear ownership" in skill
-    assert "Review only the unresolved contract or seam" in skill
+    assert "Use strict preflight only when an unresolved contract risks costly or unsafe rework." in skill
 
     for profile in sorted(ASSET_ROOT.glob("*/spec-reviewer-strict.*")):
         compact = " ".join(profile.read_text(encoding="utf-8").split())
