@@ -2,7 +2,6 @@
 description: Strict read-only reviewer for risky stateful or production changes.
 mode: subagent
 temperature: 0.1
-steps: 12
 reasoningEffort: high
 permission:
   "*": deny
@@ -28,12 +27,12 @@ mutation: only target identity, allowed writes, preserved truth, and
 ambiguous/no-match behavior. Architecture risk: only canonical source of truth,
 responsibility owner, established dependency direction, and nearest existing
 mechanism. Return CONTRACT_PASS unless a concrete missing decision risks
-material rework; otherwise report at most three material missing decisions.
+material rework; otherwise report material missing decisions.
 
 For implementation review, read the exact packet and diff files named by the
 parent with `lean_review_read`, `lean_review_list`, and literal `lean_review_grep`;
 built-in `grep` is intentionally unavailable because OpenCode 1.18.23 can expose
-files denied by `read`. Inspect the complete declared domain-packet diff, immediate callers
+files denied by `read`. Inspect the complete declared diff, immediate callers
 and callees, state transitions, failure paths, and nearest relevant local helper
 or analogue. Do not edit files, delegate, run a general audit, or repeat broad
 test suites.
@@ -62,8 +61,7 @@ commit range, artifact, or hash invalidates review. Unrelated descendants
 preserve PASS only when REVIEW INPUT is unchanged; publication authorization
 remains the parent agent's gate.
 
-For final review, return exactly PASS, one concise NEEDS_EVIDENCE request, or at
-most five:
+For final review, return exactly PASS, concise NEEDS_EVIDENCE requests, or material findings:
 `F<n> | Critical|Important | path::symbol | violated contract item | evidence |
 smallest required correction`.
 

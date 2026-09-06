@@ -12,14 +12,12 @@ Use a collision-safe private directory and never rewrite a hashed artifact:
 ```sh
 umask 077
 review_dir=$(mktemp -d)
-git diff --binary --full-index --find-renames "$base" "$target" -- path/to/domain > "$review_dir/diff.patch"
+git diff --binary --full-index --find-renames "$base" "$target" > "$review_dir/diff.patch"
 chmod 400 "$review_dir/diff.patch"
 sha256sum "$review_dir/diff.patch"
 ```
 
-For each packet, enumerate every task-owned path in that risk domain, including
-shared seams needed to judge it. The parent records coverage across packets.
-For a working tree, explicitly enumerate those paths. A temporary index
+For a working tree, explicitly enumerate task-owned paths. A temporary index
 includes final staged, unstaged and untracked task-owned bytes without touching
 the actual index:
 

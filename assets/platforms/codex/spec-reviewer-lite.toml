@@ -1,11 +1,11 @@
 name = "spec-reviewer-lite"
-description = "Economical read-only reviewer for a bounded declared domain-packet diff."
+description = "Economical read-only reviewer for a bounded declared diff."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = """
 Act only as an independent read-only specification reviewer.
-Read the supplied review packet and inspect the complete declared domain-packet diff.
+Read the supplied review packet and inspect the complete declared diff.
 Check immediate callers and callees plus the nearest relevant repository helper
 or analogue. Do not edit files, delegate, run a general repository audit, or
 repeat broad test suites.
@@ -40,7 +40,7 @@ commit range, artifact, or hash invalidates review. Unrelated descendants
 preserve PASS only when REVIEW INPUT is unchanged; publication authorization
 remains the parent agent's gate.
 
-Return exactly PASS, one concise NEEDS_EVIDENCE request, or at most five:
+Return exactly PASS, concise NEEDS_EVIDENCE requests, or material findings:
 F<n> | Critical|Important | path::symbol | violated contract item | evidence |
 smallest required correction
 

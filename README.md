@@ -4,7 +4,7 @@ A portable skill that chooses the smallest sufficient independent, read-only
 review of a concrete change: **skip** for non-behavioral edits, **lite** for
 bounded changes, **strict** for sensitive or high-impact changes. The parent
 implements; one configured `spec-reviewer-lite` or `spec-reviewer-strict`
-reviews each complete domain-scoped diff. The workflow is in [SKILL.md](SKILL.md).
+reviews the complete declared diff. The workflow is in [SKILL.md](SKILL.md).
 
 ## Install once
 
@@ -47,11 +47,8 @@ lean-review --backend auto --depth strict --repo /path/to/project \
 
 The artifact may instead describe `--target worktree`. The launcher verifies
 its hash, creates a private immutable copy, sends the entire artifact as review
-data, and binds its JSON result to the exact digest/base/target. An artifact above 64 KiB emits a scope warning before backend execution;
-this is advisory, not a semantic domain detector. Split independent domains
-as required by the skill, and explain coupled large packets in the goal. Maximum input
-is 1 MiB of UTF-8 diff, including Git binary patch records. It does not create
-or infer a diff for you. Treat findings as exit 2 and **BLOCKED** as exit 1;
+data, and binds its JSON result to the exact digest/base/target. It does not
+create or infer a diff for you. Treat findings as exit 2 and **BLOCKED** as exit 1;
 exit 0 requires exactly **PASS**. A CLI exit code alone is never PASS.
 
 For a narrow fix, prepare a new artifact and pass `--resume <runtime>` with
@@ -59,6 +56,12 @@ the previous result's runtime directory. This retains the same reviewer
 session, repository and depth. Runtime directories and private logs stay under
 `~/.cache/lean-code-review/` for rechecks and diagnosis; remove only a completed
 review's exact directory when you no longer need it.
+
+When backend counters are available, the result includes `usage` with `calls`,
+`input_tokens`, `cached_input_tokens`, and `output_tokens`, summed across this
+reviewer's session, including resumes. `calls` counts backend invocations;
+token counters retain their backend's semantics. Usage comes only from existing
+runtime event logs; if a call lacks counters, the aggregate is omitted.
 
 ## Backends
 

@@ -129,6 +129,34 @@ def codex_result(events: list[dict], runtime: Path) -> tuple[str, str]:
     return messages[-1].strip(), threads[-1]
 
 
+def session_usage(runtime: Path, backend: str) -> dict | None:
+    """Sum backend counters in this session's existing per-call logs; never estimate."""
+    total = dict.fromkeys(('calls', 'input_tokens', 'cached_input_tokens', 'output_tokens'), 0)
+    for path in runtime.glob('review-*.jsonl'):
+        counters = []
+        for line in path.read_text().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                return None
+            if backend == 'codex' and event.get('type') == 'turn.completed':
+                usage = (event.get('usage') or {})
+                counters.append([usage.get(k) for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')])
+            elif backend == 'opencode' and event.get('type') == 'step_finish':
+                usage = (event.get('part', {}).get('tokens') or {})
+                counters.append([usage.get('input'), (usage.get('cache') or {}).get('read'), usage.get('output')])
+            elif backend == 'claude' and event.get('type') == 'result':
+                usage = (event.get('usage') or {})
+                counters = [[usage.get(k) for k in ('input_tokens', 'cache_read_input_tokens', 'output_tokens')]]
+        if not counters or any(type(n) is not int or n < 0 for row in counters for n in row):
+            return None
+        total['calls'] += 1
+        for row in counters:
+            for key, value in zip(('input_tokens', 'cached_input_tokens', 'output_tokens'), row):
+                total[key] += value
+    return total if total['calls'] else None
+
+
 def review(args) -> dict:
     repo = args.repo.resolve(strict=True)
     top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=repo,
@@ -140,13 +168,7 @@ def review(args) -> dict:
     data = args.artifact.read_bytes()
     if hashlib.sha256(data).hexdigest() != args.sha256:
         raise Blocked('artifact SHA-256 mismatch')
-    if len(data) > 1024 * 1024:
-        raise Blocked('artifact exceeds 1 MiB; provide a smaller task-owned review')
     text = data.decode('utf-8')
-    if len(data) > 64 * 1024:
-        print(f'REVIEW_SCOPE_WARNING: artifact is {len(data)} bytes; split independent risk domains '
-              'into separate packets before review. Keep coupled changes together with a stated reason. '
-              'This is advisory, not a token estimate or a lower-depth recommendation.', file=sys.stderr)
     if not re.fullmatch('[0-9a-f]{40}|[0-9a-f]{64}', args.base):
         raise Blocked('base must be an immutable Git object ID')
     if args.target != 'worktree' and not re.fullmatch('commit:([0-9a-f]{40}|[0-9a-f]{64})', args.target):
@@ -253,7 +275,8 @@ def review(args) -> dict:
     state = {'backend': backend, 'depth': args.depth, 'repo': str(repo), 'session': session,
              'skill_identity': identity}
     (runtime / 'session.json').write_text(json.dumps(state))
-    return {**state, 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
+    usage = session_usage(runtime, backend)
+    return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
             'base': args.base, 'target': args.target, 'runtime': str(runtime)}
 
 

@@ -186,15 +186,53 @@ def test_uninstall_preflights_parents_and_preserves_matching_project_links(tmp_p
     assert (home / '.local/bin/lean-review').is_symlink()
 
 
-def test_large_packet_warns_before_backend_but_small_packet_does_not(tmp_path, capsys):
+def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch):
     import subprocess
-    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
-    artifact = tmp_path / 'diff.patch'
-    for size, warns in ((64 * 1024, False), (64 * 1024 + 1, True)):
-        artifact.write_bytes(b'x' * size)
-        args = SimpleNamespace(repo=tmp_path, artifact=artifact,
-                               sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                               base='0' * 40, target='worktree', backend='crush')
-        with pytest.raises(launch.Blocked, match='independent read-only'):
-            launch.review(args)
-        assert ('REVIEW_SCOPE_WARNING' in capsys.readouterr().err) is warns
+    # Counter shapes captured from actual CLI events, without prompts or payloads.
+    codex = {'type': 'turn.completed', 'usage': {
+        'input_tokens': 161537, 'cached_input_tokens': 114176, 'output_tokens': 3676}}
+    log = tmp_path / 'review-1.jsonl'
+    for backend, event, expected in (
+        ('codex', codex, (161537, 114176, 3676)),
+        ('opencode', {'type': 'step_finish', 'part': {'tokens': {
+            'input': 1187, 'output': 202, 'reasoning': 60,
+            'cache': {'write': 0, 'read': 0}}}}, (1187, 0, 202)),
+        ('claude', {'type': 'result', 'usage': {
+            'input_tokens': 0, 'cache_read_input_tokens': 0, 'output_tokens': 0}}, (0, 0, 0)),
+    ):
+        log.write_text(json.dumps(event) + '\n')
+        assert launch.session_usage(tmp_path, backend) == dict(
+            zip(('calls', 'input_tokens', 'cached_input_tokens', 'output_tokens'), (1, *expected)))
+    log.unlink()
+
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
+    events = [{'type': 'thread.started', 'thread_id': 'same-session'},
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
+
+    def run(argv, runtime, env, prompt, stem):
+        assert 'sandbox_mode="read-only"' in argv and 'approval_policy="never"' in argv
+        context = runtime / 'codex/sessions/run.jsonl'
+        context.parent.mkdir(parents=True, exist_ok=True)
+        context.write_text(json.dumps({'type': 'turn_context', 'payload': {
+            'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}))
+        (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
+        return events
+
+    monkeypatch.setattr(launch, 'run_process', run)
+    args = SimpleNamespace(repo=repo, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', backend='codex', depth='lite',
+                           resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+    first = launch.review(args)
+    assert first['usage'] == {'calls': 1, **codex['usage']}
+    args.resume = Path(first['runtime'])
+    second = launch.review(args)
+    assert second['session'] == first['session'] and second['sha256'] == args.sha256
+    assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
+    events.pop()  # Unknown counters must not turn into zero or a partial session sum.
+    assert 'usage' not in launch.review(args)
