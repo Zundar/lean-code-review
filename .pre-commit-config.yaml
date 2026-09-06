@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff check
+        entry: uv run --locked ruff check --no-fix
+        language: system
+        types_or: [python, pyi]

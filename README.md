@@ -110,3 +110,10 @@ lean-review uninstall
 Uninstall removes only global symlinks still pointing to this checkout. It
 preserves foreign paths, local settings, neighboring skills and runtime logs.
 Licensed under [MIT](LICENSE).
+
+## Development hooks
+
+Enable the optional local commit check with `uvx pre-commit install`.
+It runs `ruff check --no-fix` on staged Python files using Ruff from `uv.lock`;
+lint errors block the commit without rewriting files. Run it manually with
+`uvx pre-commit run --all-files`.
