@@ -288,19 +288,25 @@ def review(args) -> dict:
         if args.resume.stat().st_uid != os.getuid() or args.resume.stat().st_mode & 0o077:
             raise Blocked('resume runtime must be private and owned by the current user')
         previous = json.loads((args.resume / 'session.json').read_text())
-        required = {'runtime_adapter', 'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
-        if not isinstance(previous, dict) or not required <= previous.keys():
+        if not isinstance(previous, dict):
             raise Blocked('legacy/incomplete reviewer session; start a new review')
-        if previous['runtime_adapter'] not in RUNTIME_ADAPTERS:
+        saved_runtime_adapter = previous.get('runtime_adapter', previous.get('backend'))
+        if (previous.get('runtime_adapter') is not None
+                and previous.get('backend') not in (None, saved_runtime_adapter)):
+            raise Blocked('conflicting saved runtime adapter; start a new review')
+        required = {'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
+        if saved_runtime_adapter is None or not required <= previous.keys():
+            raise Blocked('legacy/incomplete reviewer session; start a new review')
+        if saved_runtime_adapter not in RUNTIME_ADAPTERS:
             raise Blocked('invalid saved runtime adapter; start a new review')
-        model_name(previous['model'], previous['runtime_adapter'])
+        model_name(previous['model'], saved_runtime_adapter)
         if not isinstance(previous['session'], str) or not previous['session']:
             raise Blocked('incomplete reviewer session; start a new review')
         if (previous['depth'], previous['repo']) != (args.depth, str(repo)):
             raise Blocked('recheck must retain runtime adapter, depth and target repository')
         if args.model not in (None, previous['model']):
             raise Blocked('recheck must retain model; start a new review')
-        selection = resolve_runtime(ROOT, args.depth, previous['runtime_adapter'],
+        selection = resolve_runtime(ROOT, args.depth, saved_runtime_adapter,
                                     previous['model'], previous['model'])
         if selection['reasoning_effort'] != previous['reasoning_effort']:
             raise Blocked('saved reasoning effort differs from canonical reviewer contract')

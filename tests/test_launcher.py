@@ -330,6 +330,11 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     assert first['observed'] == {'model': None, 'reasoning_effort': None}
     observation.update(model='reported-snapshot', effort='medium')
     args.resume = Path(first['runtime'])
+    state_file = args.resume / 'session.json'
+    saved = json.loads(state_file.read_text())
+    legacy = {**saved}
+    legacy['backend'] = legacy.pop('runtime_adapter')
+    state_file.write_text(json.dumps(legacy))
     second = launch.review(args)
     assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
     assert second['observed'] == {'model': 'reported-snapshot', 'reasoning_effort': 'medium'}
@@ -349,7 +354,6 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
         with pytest.raises(launch.Blocked, match='retain model'):
             launch.review(args)
     args.model = None
-    state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
     for key in ('model', 'reasoning_effort'):
         legacy = dict(saved)
