@@ -209,7 +209,7 @@ def test_opencode_deny_by_default():
         assert permissions['external_directory']['*'] == 'deny'
 
 
-def test_artifact_mismatch_and_unknown_runtime_fail_closed(tmp_path):
+def test_artifact_mismatch_and_unknown_runtime_fail_closed(tmp_path, monkeypatch):
     import subprocess
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
     artifact = tmp_path / 'diff.patch'
@@ -220,6 +220,8 @@ def test_artifact_mismatch_and_unknown_runtime_fail_closed(tmp_path):
     with pytest.raises(launch.Blocked, match='SHA-256 mismatch'):
         launch.review(args)
     args.sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'crush')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'model')
     with pytest.raises(launch.Blocked, match='runtime adapter'):
         launch.review(args)
     assert artifact.read_text() == 'exact diff'
@@ -298,6 +300,8 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'gpt-5.6-terra')
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
 
@@ -316,30 +320,24 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     monkeypatch.setattr(launch, 'run_process', run)
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', runtime_adapter='codex', current_model='gpt-5.6-terra', model=None,
+                           base='0' * 40, target='worktree',
+                           model=None,
                            depth='lite',
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     assert first['usage'] == {'calls': 1, **codex['usage']}
     assert first['model'] == 'gpt-5.6-terra' and first['reasoning_effort'] == 'medium'
     assert first['observed'] == {'model': None, 'reasoning_effort': None}
-    config = tmp_path / '.config/lean-code-review/config.toml'
-    config.parent.mkdir(parents=True)
-    config.write_text('runtime_adapter = "opencode"\ncurrent_model = "changed-default"\n')
     observation.update(model='reported-snapshot', effort='medium')
     args.resume = Path(first['runtime'])
-    args.runtime_adapter = 'opencode'
     second = launch.review(args)
     assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
     assert second['observed'] == {'model': 'reported-snapshot', 'reasoning_effort': 'medium'}
 
     assert second['session'] == first['session'] and second['sha256'] == args.sha256
     assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
-    config.write_text('not valid TOML [')  # Resume does not read caller defaults.
     events.pop()  # Unknown counters must not turn into zero or a partial session sum.
     assert 'usage' not in launch.review(args)
-    config.unlink()
-    args.runtime_adapter = 'codex'
     (args.resume / 'review-1.jsonl').write_bytes(b'\xff')
     result = launch.review(args)
     assert result['verdict'] == 'PASS' and 'usage' not in result
@@ -388,6 +386,8 @@ def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatc
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(launch.shutil, 'which', lambda _: pytest.fail('runtime lookup must not happen'))
     monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected runtime call'))
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
     args = SimpleNamespace(repo=tmp_path, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                            base='0' * 40, target='worktree', runtime_adapter='opencode',
@@ -405,6 +405,8 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/model')
     original_run = subprocess.run
 
     def source_config(argv, *args, **kwargs):
@@ -432,14 +434,10 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     monkeypatch.setattr(launch, 'run_process', run)
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', runtime_adapter='opencode',
-                           current_model='vendor/model', model='vendor/model',
+                           base='0' * 40, target='worktree', model='vendor/model',
                            depth='strict', resume=None, goal='test', requirements='test',
                            task_paths='diff.patch', evidence='test')
     first = launch.review(args)
-    config = tmp_path / '.config/lean-code-review/config.toml'
-    config.parent.mkdir(parents=True)
-    config.write_text('runtime_adapter = "codex"\ncurrent_model = "other/model"\n')
     args.resume, args.model = Path(first['runtime']), None
     second = launch.review(args)
     assert len(calls) == 2 and second['session'] == first['session']

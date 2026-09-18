@@ -48,10 +48,10 @@ uses a new runtime Git root outside the target repository, separate HOME,
 XDG config/cache/state, and external skill scans disabled. Only the existing authentication file is linked into the isolated XDG data store. Inherited OpenCode config overrides are
 removed. The target repository's `.opencode` files never load.
 
-Supply the caller's current runtime adapter and effective `provider/model`
-through the launcher. `--model` may override only that model inside the current
-adapter. The same identifier and canonical effort are reapplied on resume,
-without rereading caller context. Provider credentials
+The parent integration supplies the current runtime adapter and effective
+`provider/model` through the launch context. `--model` may override only that
+model inside the current adapter. The same identifier and canonical effort are
+reapplied on resume, without rereading caller context. Provider credentials
 alone do not supply a custom transport/model definition. When the selected
 model is present in the resolved user-local config, the launcher copies only its
 HTTPS OpenAI-compatible endpoint and allowlisted model metadata into the
@@ -80,14 +80,9 @@ folders until final PASS; cleanup is always address-specific.
 
 ## Codex
 
-Canonical profiles select an economical coding model with medium effort for
-lite and a strong coding model with high effort for strict. A user may override
-the model using launcher `--model`, for example:
-
-```toml
-[codex.strict]
-model = "gpt-5.6-sol"
-```
+Canonical profiles set medium effort for lite and high effort for strict; the
+current or explicit model is the same across depths. A user may override that
+model with launcher `--model`.
 
 The override is never written into canonical assets. The launcher uses a new
 runtime Git root and isolated `CODEX_HOME`, linking only the existing auth

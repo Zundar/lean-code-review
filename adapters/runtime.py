@@ -38,6 +38,12 @@ def model_name(value: object, runtime_adapter: str) -> str:
     return value
 
 
+def caller_context() -> tuple[str | None, str | None]:
+    """Read the executor-bound context; never infer it from local state."""
+    return (os.environ.get('LEAN_REVIEW_RUNTIME_ADAPTER'),
+            os.environ.get('LEAN_REVIEW_CURRENT_MODEL'))
+
+
 def codex_profile(root: Path, depth: str) -> dict:
     data = tomllib.loads(canonical(root, f'assets/platforms/codex/spec-reviewer-{depth}.toml').decode())
     if data['sandbox_mode'] != 'read-only':
@@ -300,8 +306,8 @@ def review(args) -> dict:
             raise Blocked('saved reasoning effort differs from canonical reviewer contract')
         runtime = args.resume.resolve(strict=True)
     else:
-        selection = resolve_runtime(ROOT, args.depth, args.runtime_adapter,
-                                    args.current_model, args.model)
+        runtime_adapter, current_model = caller_context()
+        selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
     runtime_adapter = selection['runtime_adapter']
     if not shutil.which(runtime_adapter):
         raise Blocked('current runtime CLI is unavailable')
@@ -405,10 +411,7 @@ def main(argv=None) -> int:
         from scripts.install import main as manage
         return manage(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--runtime-adapter', choices=RUNTIME_ADAPTERS,
-                        help='Current executor CLI supplied by the caller')
-    parser.add_argument('--current-model', help='Current effective executor model supplied by the caller')
-    parser.add_argument('--model', help='Explicit model override within the current runtime adapter')
+    parser.add_argument('--model', help='Explicit model override within the caller-bound runtime adapter')
     parser.add_argument('--depth', choices=('lite', 'strict'), required=True)
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--artifact', type=Path, required=True)

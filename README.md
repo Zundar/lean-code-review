@@ -38,7 +38,7 @@ reviewer runtime. Prepare an exact immutable diff with SHA-256, base, target,
 task paths and focused evidence; see [adapter details](references/platform-adapters.md).
 
 ```sh
-lean-review --runtime-adapter opencode --current-model provider/model --depth strict --repo /path/to/project \
+lean-review --depth strict --repo /path/to/project \
   --artifact /private/review/diff.patch --sha256 "$digest" \
   --base "$base" --target "commit:$target" \
   --goal 'Fix the task-owned behavior' --task-paths 'path/to/file' \
@@ -74,12 +74,13 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 | OpenCode | Fresh isolated HOME/XDG/config, canonical provider identity check, deny by default, bounded read/list/grep only |
 | Claude | Canonical reviewer prompt, isolated config, only Read/Grep/Glob, no MCP or hooks, effective tool catalog verification |
 
-The caller supplies the current executor context for a new review:
-`--runtime-adapter` and `--current-model`. The launcher does not inspect
-installed executables, process state, previous sessions, transcripts or mutable
-defaults to infer either value. `--model` overrides only the model inside that
-runtime adapter; it never switches the executor. Missing or invalid caller
-context is BLOCKED before a model call. No fallback or adapter iteration occurs.
+The parent integration binds the current executor context before invoking a new
+review. The launcher does not expose that runtime adapter/model binding as a
+user selector, and does not inspect installed executables, process state,
+previous sessions, transcripts or mutable defaults to infer it. `--model`
+overrides only the model inside the bound runtime adapter; it never switches the
+executor. Missing or invalid caller context is BLOCKED before a model call. No
+fallback or adapter iteration occurs.
 
 Both depths may use one current or explicit model with their distinct canonical
 contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
