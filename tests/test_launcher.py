@@ -62,8 +62,7 @@ def test_doctor_reports_project_copy(tmp_path, monkeypatch):
 
 def test_codex_override_is_local_and_read_only():
     original = (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes()
-    config = {'codex': {'strict': {'model': 'local-model'}}}
-    selection = launch.resolve_selection(ROOT, 'strict', 'codex', None, config)
+    selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'current-model', 'local-model')
     assert selection['model'] == 'local-model'
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
@@ -210,17 +209,18 @@ def test_opencode_deny_by_default():
         assert permissions['external_directory']['*'] == 'deny'
 
 
-def test_artifact_mismatch_and_unsupported_backends_fail_closed(tmp_path):
+def test_artifact_mismatch_and_unknown_runtime_fail_closed(tmp_path):
     import subprocess
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
     artifact = tmp_path / 'diff.patch'
     artifact.write_text('exact diff')
     args = SimpleNamespace(repo=tmp_path, artifact=artifact, sha256='0' * 64,
-                           base='0' * 40, target='worktree', backend='crush', depth='lite', model=None, resume=None)
+                           base='0' * 40, target='worktree', runtime_adapter='crush', current_model='model',
+                           model=None, depth='lite', resume=None)
     with pytest.raises(launch.Blocked, match='SHA-256 mismatch'):
         launch.review(args)
     args.sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    with pytest.raises(launch.Blocked, match='independent read-only'):
+    with pytest.raises(launch.Blocked, match='runtime adapter'):
         launch.review(args)
     assert artifact.read_text() == 'exact diff'
 
@@ -273,13 +273,13 @@ def test_uninstall_preflights_parents_and_preserves_matching_project_links(tmp_p
     assert (home / '.local/bin/lean-review').is_symlink()
 
 
-def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch):
+def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch):
     import subprocess
     # Counter shapes captured from actual CLI events, without prompts or payloads.
     codex = {'type': 'turn.completed', 'usage': {
         'input_tokens': 161537, 'cached_input_tokens': 114176, 'output_tokens': 3676}}
     log = tmp_path / 'review-1.jsonl'
-    for backend, event, expected in (
+    for runtime_adapter, event, expected in (
         ('codex', codex, (161537, 114176, 3676)),
         ('opencode', {'type': 'step_finish', 'part': {'tokens': {
             'input': 1187, 'output': 202, 'reasoning': 60,
@@ -288,7 +288,7 @@ def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
             'input_tokens': 0, 'cache_read_input_tokens': 0, 'output_tokens': 0}}, (0, 0, 0)),
     ):
         log.write_text(json.dumps(event) + '\n')
-        assert launch.session_usage(tmp_path, backend) == dict(
+        assert launch.session_usage(tmp_path, runtime_adapter) == dict(
             zip(('calls', 'input_tokens', 'cached_input_tokens', 'output_tokens'), (1, *expected)))
     log.unlink()
 
@@ -316,7 +316,8 @@ def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     monkeypatch.setattr(launch, 'run_process', run)
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', backend='codex', depth='lite', model=None,
+                           base='0' * 40, target='worktree', runtime_adapter='codex', current_model='gpt-5.6-terra', model=None,
+                           depth='lite',
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     assert first['usage'] == {'calls': 1, **codex['usage']}
@@ -324,32 +325,32 @@ def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     assert first['observed'] == {'model': None, 'reasoning_effort': None}
     config = tmp_path / '.config/lean-code-review/config.toml'
     config.parent.mkdir(parents=True)
-    config.write_text('backend = "opencode"\n[codex.lite]\nmodel = "changed-default"\n')
+    config.write_text('runtime_adapter = "opencode"\ncurrent_model = "changed-default"\n')
     observation.update(model='reported-snapshot', effort='medium')
     args.resume = Path(first['runtime'])
-    args.backend = 'auto'
+    args.runtime_adapter = 'opencode'
     second = launch.review(args)
-    assert second['backend'] == 'codex' and second['model'] == first['model']
+    assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
     assert second['observed'] == {'model': 'reported-snapshot', 'reasoning_effort': 'medium'}
 
     assert second['session'] == first['session'] and second['sha256'] == args.sha256
     assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
-    config.write_text('not valid TOML [')  # Resume does not even parse changed settings.
+    config.write_text('not valid TOML [')  # Resume does not read caller defaults.
     events.pop()  # Unknown counters must not turn into zero or a partial session sum.
     assert 'usage' not in launch.review(args)
     config.unlink()
-    args.backend = None
+    args.runtime_adapter = 'codex'
     (args.resume / 'review-1.jsonl').write_bytes(b'\xff')
     result = launch.review(args)
     assert result['verdict'] == 'PASS' and 'usage' not in result
 
-    # Invalid resume choices/binding must fail before any additional backend call.
+    # An explicit model mismatch fails before any additional runtime call.
     monkeypatch.setattr(launch, 'run_process', lambda *a: pytest.fail('unexpected backend call'))
-    for backend, model in (('opencode', None), (None, 'another-model')):
-        args.backend, args.model = backend, model
-        with pytest.raises(launch.Blocked, match='retain backend and model'):
+    for model in ('another-model',):
+        args.model = model
+        with pytest.raises(launch.Blocked, match='retain model'):
             launch.review(args)
-    args.backend, args.model = None, None
+    args.model = None
     state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
     for key in ('model', 'reasoning_effort'):
@@ -366,53 +367,34 @@ def test_backend_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
         launch.review(args)
 
 
-def test_selection_precedence_and_depth(tmp_path, monkeypatch):
-    monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
-    path = tmp_path / '.config/lean-code-review/config.toml'
-    path.parent.mkdir(parents=True)
-    path.write_text('backend = "opencode"\n[opencode]\nmodel = "vendor/same-model"\n'
-                    '[codex]\nmodel = "backend-model"\n[codex.strict]\nmodel = "depth-model"\n')
-    config = launch.settings(tmp_path)
+def test_caller_context_and_depth(tmp_path):
     for depth, effort in (('lite', 'low'), ('strict', 'high')):
-        assert launch.resolve_selection(ROOT, depth, None, None, config) == {
-            'backend': 'opencode', 'model': 'vendor/same-model', 'reasoning_effort': effort}
-    assert launch.resolve_selection(ROOT, 'strict', 'auto', None, config)['backend'] == 'codex'
-    for model, depth, overrides, expected in (
-        ('cli-model', 'strict', config, 'cli-model'),
-        (None, 'strict', config, 'depth-model'),
-        (None, 'lite', config, 'backend-model'),
-        (None, 'strict', {}, launch.codex_profile(ROOT, 'strict')['model']),
-    ):
-        assert launch.resolve_selection(ROOT, depth, 'codex', model, overrides)['model'] == expected
-    assert launch.resolve_selection(ROOT, 'lite', 'claude', None, {})['model'] == 'haiku'
-    assert launch.resolve_selection(ROOT, 'strict', 'claude', None, {}) == {
-        'backend': 'claude', 'model': 'sonnet', 'reasoning_effort': None}
-    assert launch.resolve_selection(ROOT, 'strict', 'claude', 'other-model', config)['model'] == 'other-model'
+        assert launch.resolve_runtime(ROOT, depth, 'opencode', 'vendor/same-model') == {
+            'runtime_adapter': 'opencode', 'model': 'vendor/same-model', 'reasoning_effort': effort}
+    assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model') == {
+        'runtime_adapter': 'claude', 'model': 'current-model', 'reasoning_effort': None}
+    assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model', 'override') == {
+        'runtime_adapter': 'claude', 'model': 'override', 'reasoning_effort': None}
     with pytest.raises(launch.Blocked, match='provider/model'):
-        launch.resolve_selection(ROOT, 'lite', 'opencode', None, {})
-    monkeypatch.setattr(launch.shutil, 'which', lambda b: None)
-    with pytest.raises(launch.Blocked, match='unavailable'):
-        launch.resolve_selection(ROOT, 'lite', 'auto', None, {})
+        launch.resolve_runtime(ROOT, 'lite', 'opencode', 'bare-model')
+    with pytest.raises(launch.Blocked, match='current runtime/model'):
+        launch.resolve_runtime(ROOT, 'lite', 'opencode', None)
 
 
-@pytest.mark.parametrize('text', [
-    'backend = "unknown"',
-    'model = "invalid-root-setting"',
-    'codex = "not-a-table"',
-    '[codex]\nmodel = 7',
-    '[codex]\nstrict = 1',
-    '[codex.strict]\nsandbox_mode = "danger-full-access"',
-    '[opencode]\nplugin = ["foreign"]',
-    '[opencode]\nmodel = ""',
-    '[opencode]\nmodel = "bare-model"',
-    '[opencode.strict]\nmodel = "provider/"',
-])
-def test_invalid_settings_fail_closed(tmp_path, text):
-    path = tmp_path / '.config/lean-code-review/config.toml'
-    path.parent.mkdir(parents=True)
-    path.write_text(text)
-    with pytest.raises(launch.Blocked):
-        launch.settings(tmp_path)
+def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
+    import subprocess
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    artifact = tmp_path / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    monkeypatch.setattr(launch.shutil, 'which', lambda _: pytest.fail('runtime lookup must not happen'))
+    monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected runtime call'))
+    args = SimpleNamespace(repo=tmp_path, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', runtime_adapter='opencode',
+                           current_model=None, model=None, depth='strict', resume=None,
+                           goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+    with pytest.raises(launch.Blocked, match='current runtime/model'):
+        launch.review(args)
 
 
 def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch):
@@ -450,14 +432,15 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     monkeypatch.setattr(launch, 'run_process', run)
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', backend='opencode', model='vendor/model',
+                           base='0' * 40, target='worktree', runtime_adapter='opencode',
+                           current_model='vendor/model', model='vendor/model',
                            depth='strict', resume=None, goal='test', requirements='test',
                            task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     config = tmp_path / '.config/lean-code-review/config.toml'
     config.parent.mkdir(parents=True)
-    config.write_text('backend = "codex"\n[opencode]\nmodel = "other/model"\n')
-    args.resume, args.backend, args.model = Path(first['runtime']), 'auto', None
+    config.write_text('runtime_adapter = "codex"\ncurrent_model = "other/model"\n')
+    args.resume, args.model = Path(first['runtime']), None
     second = launch.review(args)
     assert len(calls) == 2 and second['session'] == first['session']
     assert second['model'] == first['model'] and second['reasoning_effort'] == 'high'

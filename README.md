@@ -34,11 +34,11 @@ runtime profiles, never project-local copies.
 ## Review
 
 Ask your parent agent to use `lean-code-review`. Its IDE need not match the
-reviewer backend. Prepare an exact immutable diff with SHA-256, base, target,
+reviewer runtime. Prepare an exact immutable diff with SHA-256, base, target,
 task paths and focused evidence; see [adapter details](references/platform-adapters.md).
 
 ```sh
-lean-review --depth strict --repo /path/to/project \
+lean-review --runtime-adapter opencode --current-model provider/model --depth strict --repo /path/to/project \
   --artifact /private/review/diff.patch --sha256 "$digest" \
   --base "$base" --target "commit:$target" \
   --goal 'Fix the task-owned behavior' --task-paths 'path/to/file' \
@@ -53,71 +53,50 @@ exit 0 requires exactly **PASS**. A CLI exit code alone is never PASS.
 
 For a narrow fix, prepare a new artifact and pass `--resume <runtime>` with
 the previous result's runtime directory. This retains the same reviewer
-session, repository, depth and selected backend/model. Changing local defaults
-does not change a resume; explicit conflicting backend/model flags are BLOCKED.
+session, repository, depth and resolved runtime adapter/model. A resume ignores
+changed caller context; an explicit conflicting model is BLOCKED.
 Sessions without saved model/effort binding require a new review, not migration.
 Runtime directories and private logs stay under
 `~/.cache/lean-code-review/` for rechecks and diagnosis; remove only a completed
 review's exact directory when you no longer need it.
 
-When backend counters are available, the result includes `usage` with `calls`,
+When runtime counters are available, the result includes `usage` with `calls`,
 `input_tokens`, `cached_input_tokens`, and `output_tokens`, summed across this
-reviewer's session, including resumes. `calls` counts backend invocations;
-token counters retain their backend's semantics. Usage comes only from existing
+reviewer's session, including resumes. `calls` counts runtime invocations;
+token counters retain their runtime's semantics. Usage comes only from existing
 runtime event logs; if a call lacks counters, the aggregate is omitted.
 
-## Backends
+## Runtime Adapters
 
-| Backend | Launcher contract |
+| Runtime adapter | Launcher contract |
 | --- | --- |
 | Codex | Separate persisted `exec` process; read-only sandbox, approvals never, isolated config, effective session verification |
 | OpenCode | Fresh isolated HOME/XDG/config, canonical provider identity check, deny by default, bounded read/list/grep only |
 | Claude | Canonical reviewer prompt, isolated config, only Read/Grep/Glob, no MCP or hooks, effective tool catalog verification |
-| AGY | Canonical custom-agent contracts preserved; launcher returns BLOCKED until independent execution can be verified |
-| Crush | Parent skill discovery supported; reviewer backend returns BLOCKED because no verified custom reviewer isolation is available |
 
-New reviews select the backend by explicit `--backend`, then local `backend`,
-then `auto`. Explicit `--backend auto` uses the first installed CLI in
-**Codex → OpenCode → Claude** order, regardless of the local preference. It
-never falls back after a runtime/isolation/authentication failure. A selected
-but unavailable backend is BLOCKED; no `general` or `explore` agent substitutes.
+The caller supplies the current executor context for a new review:
+`--runtime-adapter` and `--current-model`. The launcher does not inspect
+installed executables, process state, previous sessions, transcripts or mutable
+defaults to infer either value. `--model` overrides only the model inside that
+runtime adapter; it never switches the executor. Missing or invalid caller
+context is BLOCKED before a model call. No fallback or adapter iteration occurs.
 
-Local preferences live outside this repository:
-
-```toml
-# ~/.config/lean-code-review/config.toml
-backend = "opencode"
-
-[opencode]
-model = "provider/model"
-
-# Optional per-depth override:
-# [opencode.strict]
-# model = "other-provider/other-model"
-```
-
-Model precedence is `--model` → `[backend.depth].model` → `[backend].model` →
-canonical/default model. Existing per-depth overrides still work. OpenCode has
-no canonical model: it requires an explicit `provider/model` from CLI or local
-settings instead of silently using a last-used/default model. Codex and Claude
-keep their existing defaults. Unknown settings, invalid types and empty models
-are BLOCKED; only backend/model selection is configurable, never permissions,
-prompts or reasoning. Both depths may use one model with their distinct canonical
+Both depths may use one current or explicit model with their distinct canonical
 contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
-effort setting here. Specifying a model does not configure a custom provider.
+effort setting here.
 
-The existing `session.json` and result record the selected `backend`, `model`
+The existing `session.json` and result record the resolved `runtime_adapter`, `model`
 and configured `reasoning_effort`. `observed.model` and
 `observed.reasoning_effort` contain CLI-reported metadata when available, otherwise
 `null`; a requested model is not proof of the provider's underlying weights.
 OpenCode's current parsed events do not provide that observation. Mutable model
 aliases may change upstream even while the requested identifier is pinned.
 
-A resume uses only its saved selection: omitted backend or `auto` retains the
-session's backend. New defaults affect only new sessions. Switching backend/model
-requires a new independent session and does not dismiss previous findings.
+A resume uses only its saved runtime adapter/model/reasoning/session. A changed
+caller executor does not change the resumed session. Switching model requires a
+new independent session and does not dismiss previous findings.
 Canonical prompts, tool restrictions and artifact/session checks remain unchanged.
-For OpenCode, an available selected provider definition is copied only as the
+For OpenCode, an available current provider definition is copied only as the
 allowlisted HTTPS transport/model data needed by the isolated runtime; secrets,
 plugins, MCP and project configuration are not imported.
 
@@ -125,13 +104,13 @@ plugins, MCP and project configuration are not imported.
 
 `lean-review doctor --project /path/to/project` checks discovery links, PATH,
 canonical assets and obvious project duplicates. Missing optional CLIs are
-reported as unavailable. Backend availability is separate from authentication
+reported as unavailable. Runtime availability is separate from authentication
 and effective isolation: each actual review must pass its runtime preflight.
 
-To add a backend, keep its specifics in `adapters/`, canonical profiles in
-`assets/platforms/`, and runtime notes in `references/platform-adapters.md`.
-Preserve the launcher packet/result contract. Require independent read-only
-execution and representative negative tests before enabling it in `auto`.
+To add a runtime adapter, keep its specifics in `adapters/`, canonical profiles
+in `assets/platforms/`, and runtime notes in `references/platform-adapters.md`.
+Preserve the launcher packet/result contract and require independent read-only
+execution plus representative negative tests before exposing it to callers.
 Do not change the neutral workflow to mention a platform.
 
 ```sh

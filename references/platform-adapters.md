@@ -2,7 +2,8 @@
 
 Read this file for installation, runtime troubleshooting or isolation checks.
 The shared workflow is platform-neutral. The sole launcher is `lean-review`;
-its backend is independent of the parent IDE. Use one global checkout and
+its runtime adapter is supplied by the current executor, not selected by the
+reviewer. Use one global checkout and
 `~/.agents/skills/lean-code-review` discovery link, as described in the README.
 
 ## Exact input
@@ -47,9 +48,10 @@ uses a new runtime Git root outside the target repository, separate HOME,
 XDG config/cache/state, and external skill scans disabled. Only the existing authentication file is linked into the isolated XDG data store. Inherited OpenCode config overrides are
 removed. The target repository's `.opencode` files never load.
 
-Supply an explicit `provider/model` through the launcher or its local settings
-(see README for precedence). The same identifier and canonical effort are
-reapplied on resume, without rereading user preferences. Provider credentials
+Supply the caller's current runtime adapter and effective `provider/model`
+through the launcher. `--model` may override only that model inside the current
+adapter. The same identifier and canonical effort are reapplied on resume,
+without rereading caller context. Provider credentials
 alone do not supply a custom transport/model definition. When the selected
 model is present in the resolved user-local config, the launcher copies only its
 HTTPS OpenAI-compatible endpoint and allowlisted model metadata into the
@@ -72,15 +74,15 @@ output. It uses no shell or subprocess. This is a capability boundary, not an
 OS sandbox against other processes running as the same user.
 
 Rechecks resume the same directly selected reviewer session ID. A changed
-canonical profile/provider identity or conflicting explicit model/backend blocks
-session reuse. Legacy sessions without model binding require a new review. Retain runtime
+canonical profile/provider identity or conflicting explicit model blocks session
+reuse. Legacy sessions without model binding require a new review. Retain runtime
 folders until final PASS; cleanup is always address-specific.
 
 ## Codex
 
 Canonical profiles select an economical coding model with medium effort for
 lite and a strong coding model with high effort for strict. A user may override
-the model using launcher `--model` or local backend/per-depth settings, for example:
+the model using launcher `--model`, for example:
 
 ```toml
 [codex.strict]
@@ -106,8 +108,8 @@ direct `--agent` invocation does not enforce the custom-agent tool allowlist.
 A credible adapter needs an actual custom child and effective tool verification;
 a writable parent or a post-hoc transcript alone is not a prevention boundary.
 The initial launcher therefore returns BLOCKED. No profiles are installed into
-projects or substituted with a general agent. Select an available supported
-backend explicitly or use the documented auto policy.
+projects or substituted with a general agent. No custom-agent mechanism is
+substituted.
 
 ## Claude
 
@@ -116,15 +118,14 @@ configuration, disables hooks, automatic skills and MCP, and supplies only
 Read/Grep/Glob with noninteractive permission denial. Bash is removed even
 though the portable source contract allows read-only shell inspection.
 It checks the effective initialization tool catalog before accepting a verdict.
-Model selection uses the common precedence and is pinned on resume; defaults
-remain lite `haiku` / strict `sonnet`. Init-reported model is an observation, not
+The caller supplies the current model and it is pinned on resume. Init-reported
+model is an observation, not
 proof that an alias has immutable weights. Missing authentication is BLOCKED.
 A separate global skill symlink is optional
 because Claude uses its own skill discovery path.
 
-## Crush and hosted parents
+## Hosted parents
 
-Crush discovers the user-wide `.agents/skills` installation. Its parent can
-invoke the universal launcher using another secure backend. `--backend crush`
-returns BLOCKED; there is no invented custom-agent mechanism. Hosted parents
+Hosted parents can invoke the universal launcher using their current secure
+runtime adapter. There is no invented custom-agent mechanism. Hosted parents
 without an independent read-only backend likewise report BLOCKED.

@@ -15,9 +15,9 @@ import tempfile
 import tomllib
 
 from scripts.check_opencode_lean_review import CheckError, canonical, check, https_endpoint, profile
-from scripts.install import BACKENDS, ROOT
+from scripts.install import ROOT
 
-SUPPORTED = ('codex', 'opencode', 'claude')
+RUNTIME_ADAPTERS = ('codex', 'opencode', 'claude')
 
 
 class Blocked(RuntimeError):
@@ -30,31 +30,12 @@ def private_file(path: Path, data: bytes) -> None:
         stream.write(data)
 
 
-def model_name(value: object, backend: str) -> str:
+def model_name(value: object, runtime_adapter: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r'[^\s\x00]+', value):
         raise Blocked('model must be a nonempty identifier without whitespace')
-    if backend == 'opencode' and not re.fullmatch(r'[^/]+/.+', value):
+    if runtime_adapter == 'opencode' and not re.fullmatch(r'[^/]+/.+', value):
         raise Blocked('OpenCode requires an explicit provider/model')
     return value
-
-
-def settings(home: Path) -> dict:
-    path = home / '.config/lean-code-review/config.toml'
-    data = tomllib.loads(path.read_text()) if path.exists() else {}
-    if set(data) - {'backend', *SUPPORTED} or data.get('backend', 'auto') not in ('auto', *BACKENDS):
-        raise Blocked('invalid reviewer settings or backend')
-    for backend in SUPPORTED:
-        local = data.get(backend, {})
-        if not isinstance(local, dict) or set(local) - {'model', 'lite', 'strict'}:
-            raise Blocked('only model and per-depth model settings are allowed')
-        for depth in ('lite', 'strict'):
-            entry = local.get(depth, {})
-            if not isinstance(entry, dict) or set(entry) - {'model'}:
-                raise Blocked('only a model override is allowed per depth')
-        for entry in (local, local.get('lite', {}), local.get('strict', {})):
-            if 'model' in entry:
-                model_name(entry['model'], backend)
-    return data
 
 
 def codex_profile(root: Path, depth: str) -> dict:
@@ -64,33 +45,28 @@ def codex_profile(root: Path, depth: str) -> dict:
     return data
 
 
-def resolve_selection(root: Path, depth: str, backend: str | None,
-                      model: str | None, config: dict) -> dict:
-    """Resolve once; resume passes its saved selection, never current settings."""
-    backend = backend if backend is not None else config.get('backend', 'auto')
-    if backend == 'auto':
-        backend = next((b for b in SUPPORTED if shutil.which(b)), '')
-    if backend in ('agy', 'crush'):
-        raise Blocked(f'{backend}: independent read-only execution is not verified; select a supported backend')
-    if backend not in SUPPORTED:
-        raise Blocked('selected reviewer CLI is unavailable')
-    if backend == 'codex':
+def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
+                    current_model: str | None, model: str | None = None) -> dict:
+    """Resolve from caller context once; resume passes its saved selection."""
+    if runtime_adapter not in RUNTIME_ADAPTERS:
+        raise Blocked('current runtime adapter context is required')
+    if model is None:
+        model = current_model
+    if model is None:
+        raise Blocked('current runtime/model context is required')
+    if runtime_adapter == 'codex':
         data = codex_profile(root, depth)
-        default, effort = data['model'], data['model_reasoning_effort']
-    elif backend == 'opencode':
+        effort = data['model_reasoning_effort']
+    elif runtime_adapter == 'opencode':
         front = profile(root, depth).decode().split('---', 2)[1]
         match = re.search(r'^reasoningEffort: (\w+)$', front, re.MULTILINE)
         if not match:
             raise Blocked('canonical OpenCode reasoning effort is missing')
-        default, effort = None, match[1]
+        effort = match[1]
     else:
-        default, effort = ('haiku' if depth == 'lite' else 'sonnet'), None
-    local = config.get(backend, {})
-    if model is None:
-        model = local.get(depth, {}).get('model', local.get('model', default))
-    if backend == 'opencode' and model is None:
-        raise Blocked('OpenCode requires an explicit provider/model')
-    return {'backend': backend, 'model': model_name(model, backend), 'reasoning_effort': effort}
+        effort = None
+    return {'runtime_adapter': runtime_adapter, 'model': model_name(model, runtime_adapter),
+            'reasoning_effort': effort}
 
 
 def environment(runtime: Path, repo: Path) -> dict:
@@ -213,7 +189,7 @@ def run_process(argv: list[str], runtime: Path, env: dict, prompt: str, stem: st
         os.chmod(err.name, 0o600)
         result = subprocess.run(argv, cwd=runtime, env=env, stdin=inp, stdout=out, stderr=err, timeout=900)
     if result.returncode:
-        raise Blocked(f'backend exited {result.returncode}; inspect private runtime logs: {runtime}')
+        raise Blocked(f'runtime adapter exited {result.returncode}; inspect private runtime logs: {runtime}')
     events = []
     for line in (runtime / f'{stem}.jsonl').read_text().splitlines():
         if line.strip():
@@ -249,8 +225,8 @@ def codex_result(events: list[dict], runtime: Path) -> tuple[str, str, dict]:
     return messages[-1].strip(), threads[-1], observed
 
 
-def session_usage(runtime: Path, backend: str) -> dict | None:
-    """Sum backend counters in this session's existing per-call logs; never estimate."""
+def session_usage(runtime: Path, runtime_adapter: str) -> dict | None:
+    """Sum runtime adapter counters in existing per-call logs; never estimate."""
     total = dict.fromkeys(('calls', 'input_tokens', 'cached_input_tokens', 'output_tokens'), 0)
     for path in runtime.glob('review-*.jsonl'):
         counters = []
@@ -263,13 +239,13 @@ def session_usage(runtime: Path, backend: str) -> dict | None:
                 event = json.loads(line)
             except ValueError:
                 return None
-            if backend == 'codex' and event.get('type') == 'turn.completed':
+            if runtime_adapter == 'codex' and event.get('type') == 'turn.completed':
                 usage = (event.get('usage') or {})
                 counters.append([usage.get(k) for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')])
-            elif backend == 'opencode' and event.get('type') == 'step_finish':
+            elif runtime_adapter == 'opencode' and event.get('type') == 'step_finish':
                 usage = (event.get('part', {}).get('tokens') or {})
                 counters.append([usage.get('input'), (usage.get('cache') or {}).get('read'), usage.get('output')])
-            elif backend == 'claude' and event.get('type') == 'result':
+            elif runtime_adapter == 'claude' and event.get('type') == 'result':
                 usage = (event.get('usage') or {})
                 counters = [[usage.get(k) for k in ('input_tokens', 'cache_read_input_tokens', 'output_tokens')]]
         if not counters or any(type(n) is not int or n < 0 for row in counters for n in row):
@@ -306,28 +282,29 @@ def review(args) -> dict:
         if args.resume.stat().st_uid != os.getuid() or args.resume.stat().st_mode & 0o077:
             raise Blocked('resume runtime must be private and owned by the current user')
         previous = json.loads((args.resume / 'session.json').read_text())
-        required = {'backend', 'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
+        required = {'runtime_adapter', 'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
         if not isinstance(previous, dict) or not required <= previous.keys():
             raise Blocked('legacy/incomplete reviewer session; start a new review')
-        if previous['backend'] not in SUPPORTED:
-            raise Blocked('invalid saved reviewer backend; start a new review')
-        model_name(previous['model'], previous['backend'])
+        if previous['runtime_adapter'] not in RUNTIME_ADAPTERS:
+            raise Blocked('invalid saved runtime adapter; start a new review')
+        model_name(previous['model'], previous['runtime_adapter'])
         if not isinstance(previous['session'], str) or not previous['session']:
             raise Blocked('incomplete reviewer session; start a new review')
         if (previous['depth'], previous['repo']) != (args.depth, str(repo)):
-            raise Blocked('recheck must retain backend, depth and target repository')
-        if (args.backend not in (None, 'auto', previous['backend'])
-                or args.model not in (None, previous['model'])):
-            raise Blocked('recheck must retain backend and model; start a new review')
-        selection = resolve_selection(ROOT, args.depth, previous['backend'], previous['model'], {})
+            raise Blocked('recheck must retain runtime adapter, depth and target repository')
+        if args.model not in (None, previous['model']):
+            raise Blocked('recheck must retain model; start a new review')
+        selection = resolve_runtime(ROOT, args.depth, previous['runtime_adapter'],
+                                    previous['model'], previous['model'])
         if selection['reasoning_effort'] != previous['reasoning_effort']:
             raise Blocked('saved reasoning effort differs from canonical reviewer contract')
         runtime = args.resume.resolve(strict=True)
     else:
-        selection = resolve_selection(ROOT, args.depth, args.backend, args.model, settings(home))
-    backend = selection['backend']
-    if not shutil.which(backend):
-        raise Blocked('selected reviewer CLI is unavailable')
+        selection = resolve_runtime(ROOT, args.depth, args.runtime_adapter,
+                                    args.current_model, args.model)
+    runtime_adapter = selection['runtime_adapter']
+    if not shutil.which(runtime_adapter):
+        raise Blocked('current runtime CLI is unavailable')
     identity = skill_identity()
     if previous:
         if previous['skill_identity'] != identity:
@@ -351,7 +328,7 @@ def review(args) -> dict:
               'Review only this packet using the configured reviewer contract. Return the final verdict.\n')
     session = previous['session'] if previous else None
     observed = {'model': None, 'reasoning_effort': None}
-    if backend == 'codex':
+    if runtime_adapter == 'codex':
         auth = Path(os.environ.get('CODEX_HOME', str(home / '.codex'))) / 'auth.json'
         link = runtime / 'codex/auth.json'
         if auth.is_file() and not link.exists():
@@ -359,7 +336,7 @@ def review(args) -> dict:
         argv = codex_command(ROOT, runtime, args.depth, selection, session)
         events = run_process(argv, runtime, env, packet, stem)
         verdict, session, observed = codex_result(events, runtime)
-    elif backend == 'opencode':
+    elif runtime_adapter == 'opencode':
         if not previous:
             opencode_prepare(ROOT, runtime, args.depth, selection['model'])
         check(ROOT, runtime, env, depth=args.depth, model=selection['model'])
@@ -411,7 +388,7 @@ def review(args) -> dict:
     state = {**selection, 'depth': args.depth, 'repo': str(repo), 'session': session,
              'skill_identity': identity, 'observed': observed}
     (runtime / 'session.json').write_text(json.dumps(state))
-    usage = session_usage(runtime, backend)
+    usage = session_usage(runtime, runtime_adapter)
     return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
             'base': args.base, 'target': args.target, 'runtime': str(runtime)}
 
@@ -428,8 +405,10 @@ def main(argv=None) -> int:
         from scripts.install import main as manage
         return manage(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backend', choices=('auto', *BACKENDS))
-    parser.add_argument('--model', help='Explicit model override; OpenCode requires provider/model')
+    parser.add_argument('--runtime-adapter', choices=RUNTIME_ADAPTERS,
+                        help='Current executor CLI supplied by the caller')
+    parser.add_argument('--current-model', help='Current effective executor model supplied by the caller')
+    parser.add_argument('--model', help='Explicit model override within the current runtime adapter')
     parser.add_argument('--depth', choices=('lite', 'strict'), required=True)
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--artifact', type=Path, required=True)
