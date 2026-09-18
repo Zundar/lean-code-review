@@ -14,7 +14,7 @@ import sys
 import tempfile
 import tomllib
 
-from scripts.check_opencode_lean_review import CheckError, canonical, check, profile
+from scripts.check_opencode_lean_review import CheckError, canonical, check, https_endpoint, profile
 from scripts.install import BACKENDS, ROOT
 
 SUPPORTED = ('codex', 'opencode', 'claude')
@@ -165,8 +165,7 @@ def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = 
             if not (isinstance(source, dict)
                     and source.get('npm') == '@ai-sdk/openai-compatible'
                     and isinstance(options, dict)
-                    and isinstance(options.get('baseURL'), str)
-                    and options['baseURL'].startswith('https://')
+                    and https_endpoint(options.get('baseURL'))
                     and isinstance(source_model, dict)):
                 raise Blocked('selected OpenCode provider/model metadata is malformed')
             selected = {}

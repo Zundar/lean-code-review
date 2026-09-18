@@ -116,6 +116,7 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
     permissions += [{'permission': name, 'pattern': '*', 'action': 'allow'} for name in ALLOWED]
     agent = {'tools': dict.fromkeys(ALLOWED, True), 'permission': permissions}
     original_run = subprocess.run
+    source_base_url = ['https://provider.example/v1']
 
     def source_config(argv, *args, **kwargs):
         if argv[:3] == ['opencode', 'debug', 'config']:
@@ -123,7 +124,7 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
                 'provider': {
                     'vendor': {
                         'npm': '@ai-sdk/openai-compatible',
-                        'options': {'baseURL': 'https://provider.example/v1'},
+                        'options': {'baseURL': source_base_url[0]},
                         'models': {
                             'model': {
                                 'name': 'GPT-5.6 Luna', 'reasoning': True,
@@ -160,11 +161,27 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
                 'xhigh': {'reasoningEffort': 'xhigh'},
                 'max': {'reasoningEffort': 'max'}}}}}}
     assert not (target / '.opencode').exists()
+    for index, bad_url in enumerate(('https://user:secret@provider.example/v1',
+                                     'https://provider.example/v1?api_key=secret')):
+        source_base_url[0] = bad_url
+        bad_runtime = tmp_path / f'bad-{index}'
+        bad_runtime.mkdir(mode=0o700)
+        launch.environment(bad_runtime, target)
+        with pytest.raises(launch.Blocked, match='provider/model metadata'):
+            launch.opencode_prepare(ROOT, bad_runtime, 'strict', 'vendor/model')
+    source_base_url[0] = 'https://provider.example/v1'
     config['provider']['vendor']['options']['apiKey'] = 'must-reject'
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='noncanonical'):
         check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model')
     config['provider']['vendor']['options'].pop('apiKey')
+    for bad_url in ('https://user:secret@provider.example/v1',
+                    'https://provider.example/v1?api_key=secret'):
+        config['provider']['vendor']['options']['baseURL'] = bad_url
+        (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
+        with pytest.raises(CheckError, match='noncanonical'):
+            check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model')
+    config['provider']['vendor']['options']['baseURL'] = 'https://provider.example/v1'
     config['provider']['vendor']['models']['model']['variants']['high']['apiKey'] = 'must-reject'
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='variants'):

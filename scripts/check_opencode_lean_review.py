@@ -10,12 +10,26 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+from urllib.parse import urlsplit
 
 ALLOWED = {'lean_review_read', 'lean_review_list', 'lean_review_grep'}
 
 
 class CheckError(RuntimeError):
     pass
+
+
+def https_endpoint(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError:
+        return False
+    return (parsed.scheme == 'https' and bool(parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and '?' not in value and '#' not in value)
 
 
 def canonical(root: Path, relative: str) -> bytes:
@@ -83,8 +97,7 @@ def check(root: Path, runtime: Path, env: dict, config: dict | None = None,
         if (not isinstance(definition, dict)
                 or definition.get('npm') != '@ai-sdk/openai-compatible'
                 or not isinstance(options, dict) or set(options) != {'baseURL'}
-                or not isinstance(options.get('baseURL'), str)
-                or not options['baseURL'].startswith('https://')
+                or not https_endpoint(options.get('baseURL'))
                 or not isinstance(models, dict) or set(models) != {model_id}
                 or not isinstance(models[model_id], dict)
                 or set(models[model_id]) - {'name', 'reasoning', 'limit', 'variants'}):
