@@ -38,7 +38,7 @@ reviewer backend. Prepare an exact immutable diff with SHA-256, base, target,
 task paths and focused evidence; see [adapter details](references/platform-adapters.md).
 
 ```sh
-lean-review --backend auto --depth strict --repo /path/to/project \
+lean-review --depth strict --repo /path/to/project \
   --artifact /private/review/diff.patch --sha256 "$digest" \
   --base "$base" --target "commit:$target" \
   --goal 'Fix the task-owned behavior' --task-paths 'path/to/file' \
@@ -53,7 +53,10 @@ exit 0 requires exactly **PASS**. A CLI exit code alone is never PASS.
 
 For a narrow fix, prepare a new artifact and pass `--resume <runtime>` with
 the previous result's runtime directory. This retains the same reviewer
-session, repository and depth. Runtime directories and private logs stay under
+session, repository, depth and selected backend/model. Changing local defaults
+does not change a resume; explicit conflicting backend/model flags are BLOCKED.
+Sessions without saved model/effort binding require a new review, not migration.
+Runtime directories and private logs stay under
 `~/.cache/lean-code-review/` for rechecks and diagnosis; remove only a completed
 review's exact directory when you no longer need it.
 
@@ -73,24 +76,50 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 | AGY | Canonical custom-agent contracts preserved; launcher returns BLOCKED until independent execution can be verified |
 | Crush | Parent skill discovery supported; reviewer backend returns BLOCKED because no verified custom reviewer isolation is available |
 
-`auto` selects the first installed backend in **Codex → OpenCode → Claude**
-order. It never falls back after a runtime/isolation/authentication failure.
-Explicit backend requests never switch silently. No `general` or `explore`
-agent substitutes for a reviewer.
+New reviews select the backend by explicit `--backend`, then local `backend`,
+then `auto`. Explicit `--backend auto` uses the first installed CLI in
+**Codex → OpenCode → Claude** order, regardless of the local preference. It
+never falls back after a runtime/isolation/authentication failure. A selected
+but unavailable backend is BLOCKED; no `general` or `explore` agent substitutes.
 
-Optional local model overrides live outside this repository:
+Local preferences live outside this repository:
 
 ```toml
 # ~/.config/lean-code-review/config.toml
-[codex.strict]
-model = "your-available-coding-model"
+backend = "opencode"
 
-[opencode.strict]
+[opencode]
 model = "provider/model"
+
+# Optional per-depth override:
+# [opencode.strict]
+# model = "other-provider/other-model"
 ```
 
-Canonical public profiles remain unchanged. Overrides cannot relax Codex
-sandbox or approval policy.
+Model precedence is `--model` → `[backend.depth].model` → `[backend].model` →
+canonical/default model. Existing per-depth overrides still work. OpenCode has
+no canonical model: it requires an explicit `provider/model` from CLI or local
+settings instead of silently using a last-used/default model. Codex and Claude
+keep their existing defaults. Unknown settings, invalid types and empty models
+are BLOCKED; only backend/model selection is configurable, never permissions,
+prompts or reasoning. Both depths may use one model with their distinct canonical
+contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
+effort setting here. Specifying a model does not configure a custom provider.
+
+The existing `session.json` and result record the selected `backend`, `model`
+and configured `reasoning_effort`. `observed.model` and
+`observed.reasoning_effort` contain CLI-reported metadata when available, otherwise
+`null`; a requested model is not proof of the provider's underlying weights.
+OpenCode's current parsed events do not provide that observation. Mutable model
+aliases may change upstream even while the requested identifier is pinned.
+
+A resume uses only its saved selection: omitted backend or `auto` retains the
+session's backend. New defaults affect only new sessions. Switching backend/model
+requires a new independent session and does not dismiss previous findings.
+Canonical prompts, tool restrictions and artifact/session checks remain unchanged.
+For OpenCode, an available selected provider definition is copied only as the
+allowlisted HTTPS transport/model data needed by the isolated runtime; secrets,
+plugins, MCP and project configuration are not imported.
 
 ## Check, extend, remove
 

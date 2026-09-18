@@ -16,6 +16,8 @@ import tomllib
 from scripts.check_opencode_lean_review import CheckError, canonical, check, profile
 from scripts.install import BACKENDS, ROOT
 
+SUPPORTED = ('codex', 'opencode', 'claude')
+
 
 class Blocked(RuntimeError):
     pass
@@ -27,20 +29,67 @@ def private_file(path: Path, data: bytes) -> None:
         stream.write(data)
 
 
+def model_name(value: object, backend: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r'[^\s\x00]+', value):
+        raise Blocked('model must be a nonempty identifier without whitespace')
+    if backend == 'opencode' and not re.fullmatch(r'[^/]+/.+', value):
+        raise Blocked('OpenCode requires an explicit provider/model')
+    return value
+
+
 def settings(home: Path) -> dict:
     path = home / '.config/lean-code-review/config.toml'
-    return tomllib.loads(path.read_text()) if path.exists() else {}
+    data = tomllib.loads(path.read_text()) if path.exists() else {}
+    if set(data) - {'backend', *SUPPORTED} or data.get('backend', 'auto') not in ('auto', *BACKENDS):
+        raise Blocked('invalid reviewer settings or backend')
+    for backend in SUPPORTED:
+        local = data.get(backend, {})
+        if not isinstance(local, dict) or set(local) - {'model', 'lite', 'strict'}:
+            raise Blocked('only model and per-depth model settings are allowed')
+        for depth in ('lite', 'strict'):
+            entry = local.get(depth, {})
+            if not isinstance(entry, dict) or set(entry) - {'model'}:
+                raise Blocked('only a model override is allowed per depth')
+        for entry in (local, local.get('lite', {}), local.get('strict', {})):
+            if 'model' in entry:
+                model_name(entry['model'], backend)
+    return data
 
 
-def codex_profile(root: Path, depth: str, override: dict) -> dict:
+def codex_profile(root: Path, depth: str) -> dict:
     data = tomllib.loads(canonical(root, f'assets/platforms/codex/spec-reviewer-{depth}.toml').decode())
-    local = override.get('codex', {}).get(depth, {})
-    if set(local) - {'model'} or ('model' in local and not isinstance(local['model'], str)):
-        raise Blocked('only a string model override is allowed for Codex')
-    data.update(local)
     if data['sandbox_mode'] != 'read-only':
         raise Blocked('Codex profile is not read-only')
     return data
+
+
+def resolve_selection(root: Path, depth: str, backend: str | None,
+                      model: str | None, config: dict) -> dict:
+    """Resolve once; resume passes its saved selection, never current settings."""
+    backend = backend if backend is not None else config.get('backend', 'auto')
+    if backend == 'auto':
+        backend = next((b for b in SUPPORTED if shutil.which(b)), '')
+    if backend in ('agy', 'crush'):
+        raise Blocked(f'{backend}: independent read-only execution is not verified; select a supported backend')
+    if backend not in SUPPORTED:
+        raise Blocked('selected reviewer CLI is unavailable')
+    if backend == 'codex':
+        data = codex_profile(root, depth)
+        default, effort = data['model'], data['model_reasoning_effort']
+    elif backend == 'opencode':
+        front = profile(root, depth).decode().split('---', 2)[1]
+        match = re.search(r'^reasoningEffort: (\w+)$', front, re.MULTILINE)
+        if not match:
+            raise Blocked('canonical OpenCode reasoning effort is missing')
+        default, effort = None, match[1]
+    else:
+        default, effort = ('haiku' if depth == 'lite' else 'sonnet'), None
+    local = config.get(backend, {})
+    if model is None:
+        model = local.get(depth, {}).get('model', local.get('model', default))
+    if backend == 'opencode' and model is None:
+        raise Blocked('OpenCode requires an explicit provider/model')
+    return {'backend': backend, 'model': model_name(model, backend), 'reasoning_effort': effort}
 
 
 def environment(runtime: Path, repo: Path) -> dict:
@@ -64,10 +113,10 @@ def environment(runtime: Path, repo: Path) -> dict:
     return env
 
 
-def codex_command(root: Path, runtime: Path, depth: str, override: dict, session: str | None) -> list[str]:
-    data = codex_profile(root, depth, override)
+def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
+    data = codex_profile(root, depth)
     config = {
-        'model': data['model'], 'model_reasoning_effort': data['model_reasoning_effort'],
+        'model': selection['model'], 'model_reasoning_effort': data['model_reasoning_effort'],
         'developer_instructions': data['developer_instructions'],
         'approval_policy': 'never', 'sandbox_mode': 'read-only',
         'web_search': 'disabled', 'features.multi_agent': False,
@@ -85,13 +134,37 @@ def codex_command(root: Path, runtime: Path, depth: str, override: dict, session
     return argv
 
 
-def opencode_prepare(root: Path, runtime: Path, depth: str) -> None:
+def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = None) -> None:
     config = runtime / 'config/opencode'
     for sub in ('agents', 'tools'):
         (config / sub).mkdir(mode=0o700)
     private_file(config / f'agents/spec-reviewer-{depth}.md', profile(root, depth))
     private_file(config / 'tools/lean_review.ts', canonical(root, 'assets/platforms/opencode/lean_review.ts'))
-    private_file(config / 'opencode.json', b'{"$schema":"https://opencode.ai/config.json","permission":{"*":"deny"},"share":"disabled","autoupdate":false}\n')
+    data = {'$schema': 'https://opencode.ai/config.json',
+            'permission': {'*': 'deny'}, 'share': 'disabled', 'autoupdate': False}
+    if model:
+        provider, separator, model_id = model.partition('/')
+        if separator:
+            source_env = {key: value for key, value in os.environ.items()
+                          if not key.startswith(('OPENCODE_', 'XDG_'))}
+            source_env.update(OPENCODE_DISABLE_EXTERNAL_SKILLS='1',
+                              OPENCODE_DISABLE_PROJECT_CONFIG='1',
+                              OPENCODE_DISABLE_MODELS_FETCH='1')
+            result = subprocess.run(['opencode', 'debug', 'config', '--pure'], cwd=root,
+                                    env=source_env, capture_output=True, text=True, timeout=180, check=True)
+            source = json.loads(result.stdout).get('provider', {}).get(provider, {})
+            source_model = source.get('models', {}).get(model_id, {})
+            if (source.get('npm') == '@ai-sdk/openai-compatible'
+                    and isinstance(source.get('options', {}).get('baseURL'), str)
+                    and source.get('options', {}).get('baseURL', '').startswith('https://')
+                    and isinstance(source_model, dict)):
+                selected = {key: source_model[key] for key in ('name', 'reasoning', 'limit', 'variants')
+                            if key in source_model}
+                data['provider'] = {
+                    provider: {'npm': source['npm'],
+                               'options': {'baseURL': source['options']['baseURL']},
+                               'models': {model_id: selected}}}
+    private_file(config / 'opencode.json', (json.dumps(data, separators=(',', ':')) + '\n').encode())
 
 
 def run_process(argv: list[str], runtime: Path, env: dict, prompt: str, stem: str) -> list[dict]:
@@ -110,7 +183,14 @@ def run_process(argv: list[str], runtime: Path, env: dict, prompt: str, stem: st
     return events
 
 
-def codex_result(events: list[dict], runtime: Path) -> tuple[str, str]:
+def reported_value(values: list) -> str | None:
+    # Missing or inconsistent CLI observations are not confirmation of a request.
+    if not values or any(not isinstance(v, str) or not v for v in values):
+        return None
+    return values[0] if len(set(values)) == 1 else None
+
+
+def codex_result(events: list[dict], runtime: Path) -> tuple[str, str, dict]:
     threads = [e['thread_id'] for e in events if e.get('type') == 'thread.started']
     messages = [e['item']['text'] for e in events if e.get('type') == 'item.completed'
                 and e.get('item', {}).get('type') == 'agent_message']
@@ -126,7 +206,9 @@ def codex_result(events: list[dict], runtime: Path) -> tuple[str, str]:
     if not contexts or any(c.get('sandbox_policy', {}).get('type') != 'read-only'
                            or c.get('approval_policy') != 'never' for c in contexts):
         raise Blocked('Codex effective session is not read-only/never')
-    return messages[-1].strip(), threads[-1]
+    observed = {'model': reported_value([c.get('model') for c in contexts]),
+                'reasoning_effort': reported_value([c.get('effort') for c in contexts])}
+    return messages[-1].strip(), threads[-1], observed
 
 
 def session_usage(runtime: Path, backend: str) -> dict | None:
@@ -177,16 +259,7 @@ def review(args) -> dict:
         raise Blocked('base must be an immutable Git object ID')
     if args.target != 'worktree' and not re.fullmatch('commit:([0-9a-f]{40}|[0-9a-f]{64})', args.target):
         raise Blocked('target must be worktree or commit:<immutable SHA>')
-    backend = args.backend
-    if backend == 'auto':
-        backend = next((b for b in ('codex', 'opencode', 'claude') if shutil.which(b)), '')
-    if backend in ('agy', 'crush'):
-        raise Blocked(f'{backend}: independent read-only execution is not verified; select a supported backend')
-    if not backend or not shutil.which(backend):
-        raise Blocked('selected reviewer CLI is unavailable')
     home = Path.home()
-    override = settings(home)
-    identity = skill_identity()
     previous = None
     if args.resume:
         cache = (home / '.cache/lean-code-review').resolve()
@@ -195,9 +268,30 @@ def review(args) -> dict:
         if args.resume.stat().st_uid != os.getuid() or args.resume.stat().st_mode & 0o077:
             raise Blocked('resume runtime must be private and owned by the current user')
         previous = json.loads((args.resume / 'session.json').read_text())
-        if (previous['backend'], previous['depth'], previous['repo']) != (backend, args.depth, str(repo)):
+        required = {'backend', 'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
+        if not isinstance(previous, dict) or not required <= previous.keys():
+            raise Blocked('legacy/incomplete reviewer session; start a new review')
+        if previous['backend'] not in SUPPORTED:
+            raise Blocked('invalid saved reviewer backend; start a new review')
+        model_name(previous['model'], previous['backend'])
+        if not isinstance(previous['session'], str) or not previous['session']:
+            raise Blocked('incomplete reviewer session; start a new review')
+        if (previous['depth'], previous['repo']) != (args.depth, str(repo)):
             raise Blocked('recheck must retain backend, depth and target repository')
+        if (args.backend not in (None, 'auto', previous['backend'])
+                or args.model not in (None, previous['model'])):
+            raise Blocked('recheck must retain backend and model; start a new review')
+        selection = resolve_selection(ROOT, args.depth, previous['backend'], previous['model'], {})
+        if selection['reasoning_effort'] != previous['reasoning_effort']:
+            raise Blocked('saved reasoning effort differs from canonical reviewer contract')
         runtime = args.resume.resolve(strict=True)
+    else:
+        selection = resolve_selection(ROOT, args.depth, args.backend, args.model, settings(home))
+    backend = selection['backend']
+    if not shutil.which(backend):
+        raise Blocked('selected reviewer CLI is unavailable')
+    identity = skill_identity()
+    if previous:
         if previous['skill_identity'] != identity:
             raise Blocked('canonical reviewer bytes changed since this session')
     else:
@@ -218,22 +312,21 @@ def review(args) -> dict:
               f'<review-artifact sha256="{args.sha256}">\n{text}\n</review-artifact>\n'
               'Review only this packet using the configured reviewer contract. Return the final verdict.\n')
     session = previous['session'] if previous else None
+    observed = {'model': None, 'reasoning_effort': None}
     if backend == 'codex':
         auth = Path(os.environ.get('CODEX_HOME', str(home / '.codex'))) / 'auth.json'
         link = runtime / 'codex/auth.json'
         if auth.is_file() and not link.exists():
             link.symlink_to(auth)
-        argv = codex_command(ROOT, runtime, args.depth, override, session)
+        argv = codex_command(ROOT, runtime, args.depth, selection, session)
         events = run_process(argv, runtime, env, packet, stem)
-        verdict, session = codex_result(events, runtime)
+        verdict, session, observed = codex_result(events, runtime)
     elif backend == 'opencode':
         if not previous:
-            opencode_prepare(ROOT, runtime, args.depth)
-        check(ROOT, runtime, env, depth=args.depth)
+            opencode_prepare(ROOT, runtime, args.depth, selection['model'])
+        check(ROOT, runtime, env, depth=args.depth, model=selection['model'])
         argv = ['opencode', 'run', '--pure', '--agent', f'spec-reviewer-{args.depth}', '--format', 'json']
-        model = override.get('opencode', {}).get(args.depth, {}).get('model')
-        if model:
-            argv += ['--model', model]
+        argv += ['--model', selection['model']]
         if session:
             argv += ['--session', session]
         events = run_process(argv, runtime, env, packet, stem)
@@ -256,7 +349,7 @@ def review(args) -> dict:
                 '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                 '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob',
                 '--permission-mode', 'dontAsk', '--disable-slash-commands',
-                '--system-prompt', body, '--model', 'haiku' if args.depth == 'lite' else 'sonnet',
+                '--system-prompt', body, '--model', selection['model'],
                 '--add-dir', str(repo)]
         if session:
             argv += ['--resume', session]
@@ -268,6 +361,7 @@ def review(args) -> dict:
         if not results or results[-1].get('is_error'):
             raise Blocked('Claude reviewer did not complete')
         verdict, session = results[-1]['result'].strip(), results[-1]['session_id']
+        observed['model'] = reported_value([init.get('model')])
     if hashlib.sha256(artifact.read_bytes()).hexdigest() != args.sha256 or hashlib.sha256(args.artifact.read_bytes()).hexdigest() != args.sha256:
         raise Blocked('review artifact changed during review')
     if skill_identity() != identity:
@@ -276,8 +370,8 @@ def review(args) -> dict:
         raise Blocked('recheck replaced reviewer session')
     if verdict != 'PASS' and not verdict.startswith(('NEEDS_EVIDENCE', 'F1 |')):
         raise Blocked(f'reviewer returned no valid final verdict; inspect {runtime}')
-    state = {'backend': backend, 'depth': args.depth, 'repo': str(repo), 'session': session,
-             'skill_identity': identity}
+    state = {**selection, 'depth': args.depth, 'repo': str(repo), 'session': session,
+             'skill_identity': identity, 'observed': observed}
     (runtime / 'session.json').write_text(json.dumps(state))
     usage = session_usage(runtime, backend)
     return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
@@ -296,7 +390,8 @@ def main(argv=None) -> int:
         from scripts.install import main as manage
         return manage(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backend', choices=('auto', *BACKENDS), default='auto')
+    parser.add_argument('--backend', choices=('auto', *BACKENDS))
+    parser.add_argument('--model', help='Explicit model override; OpenCode requires provider/model')
     parser.add_argument('--depth', choices=('lite', 'strict'), required=True)
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--artifact', type=Path, required=True)

@@ -47,6 +47,15 @@ uses a new runtime Git root outside the target repository, separate HOME,
 XDG config/cache/state, and external skill scans disabled. Only the existing authentication file is linked into the isolated XDG data store. Inherited OpenCode config overrides are
 removed. The target repository's `.opencode` files never load.
 
+Supply an explicit `provider/model` through the launcher or its local settings
+(see README for precedence). The same identifier and canonical effort are
+reapplied on resume, without rereading user preferences. Provider credentials
+alone do not supply a custom transport/model definition. When the selected
+model is present in the resolved user-local config, the launcher copies only its
+HTTPS OpenAI-compatible endpoint and allowlisted model metadata into the
+private runtime. Plugins, MCP, project config and credentials are never copied;
+an unsupported or absent provider remains BLOCKED. Do not bypass the checker.
+
 `SKILL_ROOT` is the standalone checkout; `LEAN_REVIEW_TARGET_REPO` supplies the
 separate target to the bounded tools. Only canonical profile bytes and the
 bounded `lean_review.ts` provider are materialized. The runtime changes
@@ -63,14 +72,15 @@ output. It uses no shell or subprocess. This is a capability boundary, not an
 OS sandbox against other processes running as the same user.
 
 Rechecks resume the same directly selected reviewer session ID. A changed
-canonical profile/provider identity blocks session reuse. Retain runtime
+canonical profile/provider identity or conflicting explicit model/backend blocks
+session reuse. Legacy sessions without model binding require a new review. Retain runtime
 folders until final PASS; cleanup is always address-specific.
 
 ## Codex
 
 Canonical profiles select an economical coding model with medium effort for
 lite and a strong coding model with high effort for strict. A user may override
-only the model in `~/.config/lean-code-review/config.toml`, for example:
+the model using launcher `--model` or local backend/per-depth settings, for example:
 
 ```toml
 [codex.strict]
@@ -84,7 +94,9 @@ configuration is inherited. It runs `codex exec --sandbox read-only` with
 `approval_policy="never"`, disabled web search and delegation. The persisted
 turn context must prove effective read-only/never before accepting a result.
 For strict fixes, `exec resume` keeps the same thread and explicitly reapplies
-the read-only/never configuration. Startup/auth/isolation failures are BLOCKED.
+the saved model and canonical read-only/never configuration. The result separates
+configured model/effort from observed turn-context metadata; absent or inconsistent
+observations remain null. Startup/auth/isolation failures are BLOCKED.
 
 ## AGY
 
@@ -104,7 +116,10 @@ configuration, disables hooks, automatic skills and MCP, and supplies only
 Read/Grep/Glob with noninteractive permission denial. Bash is removed even
 though the portable source contract allows read-only shell inspection.
 It checks the effective initialization tool catalog before accepting a verdict.
-Missing authentication is BLOCKED. A separate global skill symlink is optional
+Model selection uses the common precedence and is pinned on resume; defaults
+remain lite `haiku` / strict `sonnet`. Init-reported model is an observation, not
+proof that an alias has immutable weights. Missing authentication is BLOCKED.
+A separate global skill symlink is optional
 because Claude uses its own skill discovery path.
 
 ## Crush and hosted parents
