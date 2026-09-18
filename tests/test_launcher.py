@@ -119,10 +119,28 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
 
     def source_config(argv, *args, **kwargs):
         if argv[:3] == ['opencode', 'debug', 'config']:
-            return SimpleNamespace(stdout=json.dumps({'provider': {
-                'vendor': {'npm': '@ai-sdk/openai-compatible',
-                           'options': {'baseURL': 'https://provider.example/v1'},
-                           'models': {'model': {'name': 'Model', 'reasoning': True}}}}}))
+            payload = {
+                'provider': {
+                    'vendor': {
+                        'npm': '@ai-sdk/openai-compatible',
+                        'options': {'baseURL': 'https://provider.example/v1'},
+                        'models': {
+                            'model': {
+                                'name': 'GPT-5.6 Luna', 'reasoning': True,
+                                'limit': {'context': 272000, 'output': 128000, 'foreign': 'drop'},
+                                'variants': {
+                                    'low': {'reasoningEffort': 'low'},
+                                    'medium': {'reasoningEffort': 'medium'},
+                                    'high': {'reasoningEffort': 'high', 'apiKey': 'drop'},
+                                    'xhigh': {'reasoningEffort': 'xhigh'},
+                                    'max': {'reasoningEffort': 'max'},
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            return SimpleNamespace(stdout=json.dumps(payload))
         return original_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(launch.subprocess, 'run', source_config)
@@ -132,13 +150,25 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
     assert config['provider'] == {'vendor': {
         'npm': '@ai-sdk/openai-compatible',
         'options': {'baseURL': 'https://provider.example/v1'},
-        'models': {'model': {'name': 'Model', 'reasoning': True}}}}
+        'models': {'model': {
+            'name': 'GPT-5.6 Luna', 'reasoning': True,
+            'limit': {'context': 272000, 'output': 128000},
+            'variants': {
+                'low': {'reasoningEffort': 'low'},
+                'medium': {'reasoningEffort': 'medium'},
+                'high': {'reasoningEffort': 'high'},
+                'xhigh': {'reasoningEffort': 'xhigh'},
+                'max': {'reasoningEffort': 'max'}}}}}}
     assert not (target / '.opencode').exists()
     config['provider']['vendor']['options']['apiKey'] = 'must-reject'
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='noncanonical'):
         check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model')
     config['provider']['vendor']['options'].pop('apiKey')
+    config['provider']['vendor']['models']['model']['variants']['high']['apiKey'] = 'must-reject'
+    (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
+    with pytest.raises(CheckError, match='variants'):
+        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model')
     config['permission'] = {'*': 'allow'}
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='noncanonical'):

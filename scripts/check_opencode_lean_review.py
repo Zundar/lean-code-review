@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -74,15 +75,44 @@ def check(root: Path, runtime: Path, env: dict, config: dict | None = None,
     if model:
         provider, separator, model_id = model.partition('/')
         providers = runtime_config.get('provider', {})
-        definition = providers.get(provider, {}) if separator and isinstance(providers, dict) else {}
-        options = definition.get('options', {}) if isinstance(definition, dict) else {}
-        models = definition.get('models', {}) if isinstance(definition, dict) else {}
-        if (set(providers) != {provider} or definition.get('npm') != '@ai-sdk/openai-compatible'
-                or set(options) != {'baseURL'} or not isinstance(options.get('baseURL'), str)
-                or not options['baseURL'].startswith('https://') or set(models) != {model_id}
+        if not separator or not isinstance(providers, dict) or set(providers) != {provider}:
+            raise CheckError('selected OpenCode provider/model definition is missing or noncanonical')
+        definition = providers[provider]
+        options = definition.get('options') if isinstance(definition, dict) else None
+        models = definition.get('models') if isinstance(definition, dict) else None
+        if (not isinstance(definition, dict)
+                or definition.get('npm') != '@ai-sdk/openai-compatible'
+                or not isinstance(options, dict) or set(options) != {'baseURL'}
+                or not isinstance(options.get('baseURL'), str)
+                or not options['baseURL'].startswith('https://')
+                or not isinstance(models, dict) or set(models) != {model_id}
                 or not isinstance(models[model_id], dict)
                 or set(models[model_id]) - {'name', 'reasoning', 'limit', 'variants'}):
             raise CheckError('selected OpenCode provider/model definition is missing or noncanonical')
+        model_definition = models[model_id]
+        if (('name' in model_definition
+             and (not isinstance(model_definition['name'], str) or not model_definition['name']))
+                or ('reasoning' in model_definition and not isinstance(model_definition['reasoning'], bool))):
+            raise CheckError('selected OpenCode model metadata is malformed')
+        limit = model_definition.get('limit')
+        if limit is not None and (
+                not isinstance(limit, dict)
+                or set(limit) - {'context', 'output'}
+                or any(not (type(limit[key]) is int
+                            or (type(limit[key]) is float and math.isfinite(limit[key]))) for key in limit)
+        ):
+            raise CheckError('selected OpenCode model limit is noncanonical')
+        variants = model_definition.get('variants')
+        if variants is not None and (
+                not isinstance(variants, dict)
+                or any(not isinstance(variant, str) or not variant
+                       or not isinstance(values, dict)
+                       or set(values) != {'reasoningEffort'}
+                       or not isinstance(values['reasoningEffort'], str)
+                       or not values['reasoningEffort']
+                       for variant, values in variants.items())
+        ):
+            raise CheckError('selected OpenCode model variants are noncanonical')
     elif 'provider' in runtime_config:
         raise CheckError('unexpected OpenCode provider definition')
     canonical(root, 'SKILL.md')

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -152,18 +153,56 @@ def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = 
                               OPENCODE_DISABLE_MODELS_FETCH='1')
             result = subprocess.run(['opencode', 'debug', 'config', '--pure'], cwd=root,
                                     env=source_env, capture_output=True, text=True, timeout=180, check=True)
-            source = json.loads(result.stdout).get('provider', {}).get(provider, {})
-            source_model = source.get('models', {}).get(model_id, {})
-            if (source.get('npm') == '@ai-sdk/openai-compatible'
-                    and isinstance(source.get('options', {}).get('baseURL'), str)
-                    and source.get('options', {}).get('baseURL', '').startswith('https://')
+            try:
+                resolved = json.loads(result.stdout)
+            except ValueError as exc:
+                raise Blocked('OpenCode provider config is malformed') from exc
+            providers = resolved.get('provider') if isinstance(resolved, dict) else None
+            source = providers.get(provider) if isinstance(providers, dict) else None
+            options = source.get('options') if isinstance(source, dict) else None
+            models = source.get('models') if isinstance(source, dict) else None
+            source_model = models.get(model_id) if isinstance(models, dict) else None
+            if not (isinstance(source, dict)
+                    and source.get('npm') == '@ai-sdk/openai-compatible'
+                    and isinstance(options, dict)
+                    and isinstance(options.get('baseURL'), str)
+                    and options['baseURL'].startswith('https://')
                     and isinstance(source_model, dict)):
-                selected = {key: source_model[key] for key in ('name', 'reasoning', 'limit', 'variants')
-                            if key in source_model}
-                data['provider'] = {
-                    provider: {'npm': source['npm'],
-                               'options': {'baseURL': source['options']['baseURL']},
-                               'models': {model_id: selected}}}
+                raise Blocked('selected OpenCode provider/model metadata is malformed')
+            selected = {}
+            for key, expected in (('name', str), ('reasoning', bool)):
+                if key in source_model:
+                    if not isinstance(source_model[key], expected) or (key == 'name' and not source_model[key]):
+                        raise Blocked(f'OpenCode model {key} metadata is malformed')
+                    selected[key] = source_model[key]
+            if 'limit' in source_model:
+                limit = source_model['limit']
+                if not isinstance(limit, dict) or any(
+                    not (type(limit[key]) is int
+                         or (type(limit[key]) is float and math.isfinite(limit[key])))
+                    for key in ('context', 'output') if key in limit
+                ):
+                    raise Blocked('OpenCode model limit metadata is malformed')
+                selected_limit = {key: limit[key] for key in ('context', 'output') if key in limit}
+                if selected_limit:
+                    selected['limit'] = selected_limit
+            if 'variants' in source_model:
+                variants = source_model['variants']
+                if not isinstance(variants, dict):
+                    raise Blocked('OpenCode model variants metadata is malformed')
+                selected_variants = {}
+                for variant, values in variants.items():
+                    if (not isinstance(variant, str) or not variant
+                            or not isinstance(values, dict)
+                            or not isinstance(values.get('reasoningEffort'), str)
+                            or not values['reasoningEffort']):
+                        raise Blocked('OpenCode model variant metadata is malformed')
+                    selected_variants[variant] = {'reasoningEffort': values['reasoningEffort']}
+                selected['variants'] = selected_variants
+            data['provider'] = {
+                provider: {'npm': source['npm'],
+                           'options': {'baseURL': options['baseURL']},
+                           'models': {model_id: selected}}}
     private_file(config / 'opencode.json', (json.dumps(data, separators=(',', ':')) + '\n').encode())
 
 
