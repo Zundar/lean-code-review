@@ -376,9 +376,20 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
+    original_run = subprocess.run
+
+    def source_config(argv, *args, **kwargs):
+        if argv[:3] == ['opencode', 'debug', 'config']:
+            return SimpleNamespace(stdout=json.dumps({'provider': {
+                'vendor': {'npm': '@ai-sdk/openai-compatible',
+                           'options': {'baseURL': 'https://provider.example/v1'},
+                           'models': {'model': {'name': 'Model'}}}}}))
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(launch.subprocess, 'run', source_config)
     # Only the external CLI debug response is substituted; the real checker runs.
     monkeypatch.setattr(launch, 'check', lambda root, runtime, env, depth, model=None:
-                        check(root, runtime, env, {}, agent, depth))
+                        check(root, runtime, env, {}, agent, depth, model))
     calls = []
 
     def run(argv, runtime, env, prompt, stem):
