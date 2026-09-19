@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+LEAN_REVIEW_RUNTIME_ADAPTER=codex
+export LEAN_REVIEW_RUNTIME_ADAPTER
+exec "$(dirname "$0")/lean-review" "$@"

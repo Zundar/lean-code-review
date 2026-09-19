@@ -80,6 +80,10 @@ folders until final PASS; cleanup is always address-specific.
 
 ## Codex
 
+The `lean-review-codex` caller binds `runtime_adapter=codex` and delegates to
+the generic `lean-review` launcher. It does not infer a model: use `--model` or
+the authoritative `LEAN_REVIEW_CURRENT_MODEL` caller context.
+
 Canonical profiles set medium effort for lite and high effort for strict; the
 current or explicit model is the same across depths. A user may override that
 model with launcher `--model`.

@@ -38,6 +38,29 @@ def test_install_collision_idempotence_and_address_only_uninstall(tmp_path, monk
     install.uninstall(ROOT, home)
 
 
+def test_codex_caller_binds_adapter_and_delegates(tmp_path):
+    import os
+    import subprocess
+
+    launcher = tmp_path / 'lean-review'
+    wrapper = tmp_path / 'lean-review-codex'
+    trace = tmp_path / 'trace'
+    wrapper.write_text((ROOT / 'scripts/lean-review-codex').read_text())
+    wrapper.chmod(0o755)
+    launcher.write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$LEAN_REVIEW_RUNTIME_ADAPTER" "$LEAN_REVIEW_CURRENT_MODEL" "$@" > "$TRACE"\n'
+    )
+    launcher.chmod(0o755)
+    env = dict(os.environ, TRACE=str(trace), LEAN_REVIEW_CURRENT_MODEL='authoritative-model')
+    env.pop('LEAN_REVIEW_RUNTIME_ADAPTER', None)
+
+    subprocess.run([wrapper, '--model', 'explicit-model'],
+                   cwd=tmp_path, env=env, check=True)
+
+    assert trace.read_text().splitlines() == ['codex', 'authoritative-model', '--model', 'explicit-model']
+
+
 def test_install_preflights_all_links_before_writing(tmp_path):
     path = tmp_path / '.local/bin/lean-review'
     path.parent.mkdir(parents=True)
@@ -381,6 +404,8 @@ def test_caller_context_and_depth(tmp_path):
         launch.resolve_runtime(ROOT, 'lite', 'opencode', 'bare-model')
     with pytest.raises(launch.Blocked, match='current runtime/model'):
         launch.resolve_runtime(ROOT, 'lite', 'opencode', None)
+    with pytest.raises(launch.Blocked, match='current runtime/model'):
+        launch.resolve_runtime(ROOT, 'lite', 'codex', None)
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):

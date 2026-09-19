@@ -18,7 +18,8 @@ DUPLICATES = ('.agents/skills/lean-code-review', '.opencode/skills/lean-code-rev
 
 def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
     result = {home / '.agents/skills/lean-code-review': root,
-              home / '.local/bin/lean-review': root / 'scripts/lean-review'}
+              home / '.local/bin/lean-review': root / 'scripts/lean-review',
+              home / '.local/bin/lean-review-codex': root / 'scripts/lean-review-codex'}
     # Claude does not share the universal agents skill discovery path.
     if 'claude' in platforms:
         result[home / '.claude/skills/lean-code-review'] = root

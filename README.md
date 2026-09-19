@@ -23,6 +23,7 @@ Ensure `~/.local/bin` is on `PATH`. Installation creates only:
 ```text
 ~/.agents/skills/lean-code-review -> ~/agent-skills/lean-code-review
 ~/.local/bin/lean-review -> ~/agent-skills/lean-code-review/scripts/lean-review
+~/.local/bin/lean-review-codex -> ~/agent-skills/lean-code-review/scripts/lean-review-codex
 ```
 
 OpenCode, Codex and Crush use global skill discovery. For Claude's separate
@@ -81,6 +82,10 @@ previous sessions, transcripts or mutable defaults to infer it. `--model`
 overrides only the model inside the bound runtime adapter; it never switches the
 executor. Missing or invalid caller context is BLOCKED before a model call. No
 fallback or adapter iteration occurs.
+
+For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
+delegates to `lean-review`. Supply `--model` or `LEAN_REVIEW_CURRENT_MODEL` as
+the authoritative model; the wrapper does not infer one.
 
 Both depths may use one current or explicit model with their distinct canonical
 contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
