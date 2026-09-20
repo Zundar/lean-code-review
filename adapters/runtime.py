@@ -73,12 +73,17 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
         data = codex_profile(root, depth)
         effort = data['model_reasoning_effort']
     elif runtime_adapter == 'opencode':
+        bound_provider = None
+        if current_model is not None:
+            bound_provider = model_name(current_model, runtime_adapter).partition('/')[0]
         if model is None:
-            if current_model is None:
+            if bound_provider is None:
                 raise Blocked('current runtime/model context is required')
-            provider = model_name(current_model, runtime_adapter).partition('/')[0]
-            model = f'{provider}/{REVIEW_MODEL}'
-        model = allowed_model(model, runtime_adapter)
+            model = f'{bound_provider}/{REVIEW_MODEL}'
+        else:
+            model = allowed_model(model, runtime_adapter)
+            if bound_provider is not None and model.partition('/')[0] != bound_provider:
+                raise Blocked('explicit OpenCode provider differs from bound provider')
         front = profile(root, depth).decode().split('---', 2)[1]
         match = re.search(r'^reasoningEffort: (\w+)$', front, re.MULTILINE)
         if not match:
@@ -343,10 +348,9 @@ def review(args) -> dict:
         previous = json.loads((args.resume / 'session.json').read_text())
         if not isinstance(previous, dict):
             raise Blocked('legacy/incomplete reviewer session; start a new review')
-        saved_runtime_adapter = previous.get('runtime_adapter', previous.get('backend'))
-        if (previous.get('runtime_adapter') is not None
-                and previous.get('backend') not in (None, saved_runtime_adapter)):
-            raise Blocked('conflicting saved runtime adapter; start a new review')
+        if 'backend' in previous or 'runtime_adapter' not in previous:
+            raise Blocked('legacy/incomplete reviewer session; start a new review')
+        saved_runtime_adapter = previous['runtime_adapter']
         required = {'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
         if saved_runtime_adapter is None or not required <= previous.keys():
             raise Blocked('legacy/incomplete reviewer session; start a new review')

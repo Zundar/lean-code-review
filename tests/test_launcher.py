@@ -383,9 +383,6 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     args.resume = Path(first['runtime'])
     state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
-    legacy = {**saved}
-    legacy['backend'] = legacy.pop('runtime_adapter')
-    state_file.write_text(json.dumps(legacy))
     second = launch.review(args)
     assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
     assert second['observed'] == {'model': launch.REVIEW_MODEL, 'reasoning_effort': 'medium'}
@@ -414,6 +411,12 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     with pytest.raises(launch.Blocked, match='only gpt-5.6-luna is allowed'):
         launch.review(args)
     state_file.write_text(json.dumps(saved))
+    legacy = {**saved}
+    legacy['backend'] = legacy.pop('runtime_adapter')
+    state_file.write_text(json.dumps(legacy))
+    with pytest.raises(launch.Blocked, match='legacy/incomplete'):
+        launch.review(args)
+    state_file.write_text(json.dumps(saved))
     for key in ('model', 'reasoning_effort'):
         legacy = dict(saved)
         legacy.pop(key)
@@ -433,7 +436,10 @@ def test_caller_context_and_depth(tmp_path):
         assert launch.resolve_runtime(ROOT, depth, 'opencode', 'vendor/gpt-5.6-astra') == {
             'runtime_adapter': 'opencode', 'model': 'vendor/gpt-5.6-luna', 'reasoning_effort': effort}
     assert launch.resolve_runtime(ROOT, 'lite', 'opencode', 'vendor/gpt-5.6-astra',
-                                  'other/gpt-5.6-luna')['model'] == 'other/gpt-5.6-luna'
+                                  'vendor/gpt-5.6-luna')['model'] == 'vendor/gpt-5.6-luna'
+    with pytest.raises(launch.Blocked, match='bound provider'):
+        launch.resolve_runtime(ROOT, 'lite', 'opencode', 'vendor/gpt-5.6-astra',
+                               'other/gpt-5.6-luna')
     assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model') == {
         'runtime_adapter': 'claude', 'model': 'current-model', 'reasoning_effort': None}
     assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model', 'override') == {
