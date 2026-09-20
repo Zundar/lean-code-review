@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+case "${LEAN_REVIEW_RUNTIME_ADAPTER-}" in
+  ''|codex) ;;
+  *)
+    echo "caller runtime adapter is already bound to ${LEAN_REVIEW_RUNTIME_ADAPTER}" >&2
+    exit 1
+    ;;
+esac
+
 LEAN_REVIEW_RUNTIME_ADAPTER=codex
 export LEAN_REVIEW_RUNTIME_ADAPTER
 exec "$(dirname "$0")/lean-review" "$@"

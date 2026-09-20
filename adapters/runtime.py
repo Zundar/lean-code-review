@@ -18,6 +18,7 @@ from scripts.check_opencode_lean_review import CheckError, canonical, check, htt
 from scripts.install import ROOT
 
 RUNTIME_ADAPTERS = ('codex', 'opencode', 'claude')
+REVIEW_MODEL = 'gpt-5.6-luna'
 
 
 class Blocked(RuntimeError):
@@ -35,6 +36,15 @@ def model_name(value: object, runtime_adapter: str) -> str:
         raise Blocked('model must be a nonempty identifier without whitespace')
     if runtime_adapter == 'opencode' and not re.fullmatch(r'[^/]+/.+', value):
         raise Blocked('OpenCode requires an explicit provider/model')
+    return value
+
+
+def allowed_model(value: object, runtime_adapter: str) -> str:
+    value = model_name(value, runtime_adapter)
+    model_id = value.rpartition('/')[2]
+    if ((runtime_adapter == 'codex' and value != REVIEW_MODEL)
+            or (runtime_adapter == 'opencode' and model_id != REVIEW_MODEL)):
+        raise Blocked(f'only {REVIEW_MODEL} is allowed for {runtime_adapter}')
     return value
 
 
@@ -56,22 +66,30 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
     """Resolve from caller context once; resume passes its saved selection."""
     if runtime_adapter not in RUNTIME_ADAPTERS:
         raise Blocked('current runtime adapter context is required')
-    if model is None:
-        model = current_model
-    if model is None and runtime_adapter != 'codex':
-        raise Blocked('current runtime/model context is required')
-    if model is not None:
-        model = model_name(model, runtime_adapter)
     if runtime_adapter == 'codex':
+        if model is not None:
+            allowed_model(model, runtime_adapter)
+        model = REVIEW_MODEL
         data = codex_profile(root, depth)
         effort = data['model_reasoning_effort']
     elif runtime_adapter == 'opencode':
+        if model is None:
+            if current_model is None:
+                raise Blocked('current runtime/model context is required')
+            provider = model_name(current_model, runtime_adapter).partition('/')[0]
+            model = f'{provider}/{REVIEW_MODEL}'
+        model = allowed_model(model, runtime_adapter)
         front = profile(root, depth).decode().split('---', 2)[1]
         match = re.search(r'^reasoningEffort: (\w+)$', front, re.MULTILINE)
         if not match:
             raise Blocked('canonical OpenCode reasoning effort is missing')
         effort = match[1]
     else:
+        if model is None:
+            model = current_model
+        if model is None:
+            raise Blocked('current runtime/model context is required')
+        model = model_name(model, runtime_adapter)
         effort = None
     return {'runtime_adapter': runtime_adapter, 'model': model,
             'reasoning_effort': effort}
@@ -101,14 +119,13 @@ def environment(runtime: Path, repo: Path) -> dict:
 def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
     data = codex_profile(root, depth)
     config = {
+        'model': allowed_model(selection['model'], 'codex'),
         'model_reasoning_effort': data['model_reasoning_effort'],
         'developer_instructions': data['developer_instructions'],
         'approval_policy': 'never', 'sandbox_mode': 'read-only',
         'web_search': 'disabled', 'features.multi_agent': False,
         'project_doc_max_bytes': 0,
     }
-    if selection['model'] is not None:
-        config['model'] = selection['model']
     argv = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--json']
     if not session:
         argv += ['--sandbox', 'read-only']
@@ -129,7 +146,8 @@ def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = 
     private_file(config / 'tools/lean_review.ts', canonical(root, 'assets/platforms/opencode/lean_review.ts'))
     data = {'$schema': 'https://opencode.ai/config.json',
             'permission': {'*': 'deny'}, 'share': 'disabled', 'autoupdate': False}
-    if model:
+    if model is not None:
+        model = allowed_model(model, 'opencode')
         provider, separator, model_id = model.partition('/')
         if separator:
             source_env = {key: value for key, value in os.environ.items()

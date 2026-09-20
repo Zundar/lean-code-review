@@ -78,26 +78,22 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 The parent integration binds the current executor context before invoking a new
 review. The launcher does not expose that runtime adapter/model binding as a
 user selector, and does not inspect installed executables, process state,
-previous sessions, transcripts or mutable defaults to infer it. `--model`
-overrides only the model inside the bound runtime adapter; it never switches the
-executor. A Codex review may start without a caller model and must bind only the
-unambiguous effective model reported by its current `turn_context`; missing or
-mismatched observations are BLOCKED. No fallback or adapter iteration occurs.
+previous sessions, transcripts or mutable defaults to infer it. `--model` stays
+inside the bound runtime adapter and must identify the allowed Luna model; it
+never switches the executor. No fallback or adapter iteration occurs.
 
 For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
-delegates to `lean-review`. `--model` or `LEAN_REVIEW_CURRENT_MODEL` is an
-optional initial pin; without either, the child Codex chooses its default and
-the launcher binds only the unambiguous effective model from the current
-`turn_context`.
+delegates to `lean-review`. Every new or resumed Codex review explicitly pins
+`gpt-5.6-luna`; another explicit model or saved model is BLOCKED before launch.
 
-Both depths may use one current or explicit model with their distinct canonical
-contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
-effort setting here.
+OpenCode preserves the bound provider and pins its model part to
+`gpt-5.6-luna`; Codex uses medium/high effort by depth. Claude keeps its current
+model contract and has no explicit effort setting here.
 
 The existing `session.json` and result record the resolved `runtime_adapter`, `model`
-and configured `reasoning_effort`. For Codex, `model` is the observed effective
-model from the current turn and the review is BLOCKED if it is absent, ambiguous,
-or differs from an explicit/current request. `observed.model` and
+and configured `reasoning_effort`. For Codex, `model` is the pinned Luna request
+and `observed.model` must report the same effective model; missing, ambiguous, or
+mismatched observations are BLOCKED. `observed.model` and
 `observed.reasoning_effort` contain CLI-reported metadata; a requested model is
 not proof of the provider's underlying weights.
 OpenCode's current parsed events do not provide that observation. Mutable model
