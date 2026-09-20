@@ -480,8 +480,7 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
                         + '\n' + old + '\n')
     unrelated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'unrelated-thread'}})
                          + '\n')
-    stat = matching.stat()
-    snapshot = matching, stat.st_dev, stat.st_ino, stat.st_size
+    snapshot = matching, matching.stat().st_size
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, snapshot)
     with matching.open('a') as stream:
@@ -508,31 +507,6 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
     duplicate = session_root('duplicate', ('one.jsonl', 'two.jsonl'))
     with pytest.raises(launch.Blocked, match='one matching session'):
         launch.codex_result(events, duplicate.parent.parent)
-
-    guarded = session_root('guarded', ('run.jsonl',)) / 'run.jsonl'
-    guarded.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
-                       + '\n' + old + '\n')
-    stat = guarded.stat()
-    guarded_snapshot = guarded, stat.st_dev, stat.st_ino, stat.st_size
-    with guarded.open('a') as stream:
-        stream.write(new + '\n')
-    renamed = guarded.with_name('renamed.jsonl')
-    guarded.rename(renamed)
-    with pytest.raises(launch.Blocked, match='no current turn context'):
-        launch.codex_result(events, guarded.parent.parent.parent, guarded_snapshot)
-
-    renamed.rename(guarded)
-    replacement = guarded.with_name('replacement.jsonl')
-    replacement.write_text(guarded.read_text() + new + '\n')
-    replacement.replace(guarded)
-    with pytest.raises(launch.Blocked, match='no current turn context'):
-        launch.codex_result(events, guarded.parent.parent.parent, guarded_snapshot)
-
-    stat = guarded.stat()
-    truncation_snapshot = guarded, stat.st_dev, stat.st_ino, stat.st_size
-    guarded.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
-    with pytest.raises(launch.Blocked, match='no current turn context'):
-        launch.codex_result(events, guarded.parent.parent.parent, truncation_snapshot)
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):

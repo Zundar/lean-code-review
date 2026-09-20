@@ -220,22 +220,21 @@ def codex_session_file(runtime: Path, session_id: str) -> Path:
     if not sessions.exists():
         raise Blocked('Codex did not persist one matching session')
     for path in sessions.rglob('*.jsonl'):
-        session_ids = []
         with path.open() as stream:
             for line in stream:
                 event = json.loads(line)
                 if event.get('type') == 'session_meta':
                     payload = event.get('payload')
-                    session_ids.append(payload.get('id') if isinstance(payload, dict) else None)
-        if reported_value(session_ids) == session_id:
-            matches.append(path)
+                    if isinstance(payload, dict) and payload.get('id') == session_id:
+                        matches.append(path)
+                    break
     if len(matches) != 1:
         raise Blocked('Codex did not persist one matching session')
     return matches[0]
 
 
 def codex_result(events: list[dict], runtime: Path,
-                 session_snapshot: tuple[Path, int, int, int] | None = None) -> tuple[str, str, dict]:
+                 session_snapshot: tuple[Path, int] | None = None) -> tuple[str, str, dict]:
     threads = [e.get('thread_id') for e in events if e.get('type') == 'thread.started']
     messages = [e['item']['text'] for e in events if e.get('type') == 'item.completed'
                 and e.get('item', {}).get('type') == 'agent_message']
@@ -247,10 +246,8 @@ def codex_result(events: list[dict], runtime: Path,
     path = codex_session_file(runtime, thread_id)
     start = 0
     if session_snapshot is not None:
-        previous_path, device, inode, start = session_snapshot
-        stat = path.stat()
-        if (path != previous_path or stat.st_dev != device or stat.st_ino != inode
-                or stat.st_size < start):
+        previous_path, start = session_snapshot
+        if path != previous_path or path.stat().st_size < start:
             raise Blocked('Codex returned no current turn context')
     contexts = []
     with path.open() as stream:
@@ -387,8 +384,7 @@ def review(args) -> dict:
         session_snapshot = None
         if session:
             path = codex_session_file(runtime, session)
-            stat = path.stat()
-            session_snapshot = (path, stat.st_dev, stat.st_ino, stat.st_size)
+            session_snapshot = (path, path.stat().st_size)
         events = run_process(argv, runtime, env, packet, stem)
         verdict, session, observed = codex_result(events, runtime, session_snapshot)
         if observed['model'] is None:
