@@ -457,6 +457,7 @@ def test_caller_context_and_depth(tmp_path):
     ('codex', 'gpt-5.6-sol'),
     ('codex', 'gpt-5.6-terra'),
     ('opencode', 'vendor/gpt-6-astra'),
+    ('opencode', 'vendor/other/gpt-5.6-luna'),
 ))
 def test_forbidden_model_blocks_before_child_or_provider_call(tmp_path, monkeypatch, adapter, model):
     import subprocess
@@ -483,6 +484,43 @@ def test_forbidden_model_blocks_before_child_or_provider_call(tmp_path, monkeypa
     with pytest.raises(launch.Blocked, match='only gpt-5.6-luna is allowed'):
         launch.review(args)
     assert provider_calls == []
+
+
+def test_claude_legacy_resume_keeps_compatibility(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/claude')
+    runtime = tmp_path / '.cache/lean-code-review/review-legacy'
+    runtime.mkdir(parents=True, mode=0o700)
+    (runtime / 'session.json').write_text(json.dumps({
+        'backend': 'claude', 'model': 'claude-model', 'reasoning_effort': None,
+        'depth': 'lite', 'repo': str(repo), 'session': 'same-session',
+        'skill_identity': launch.skill_identity(),
+    }))
+
+    def run(argv, *_args):
+        assert argv[0] == 'claude' and '--resume' in argv
+        return [
+            {'type': 'system', 'subtype': 'init', 'tools': ['Read', 'Grep', 'Glob'],
+             'mcp_servers': [], 'model': 'claude-model'},
+            {'type': 'result', 'is_error': False, 'result': 'PASS',
+             'session_id': 'same-session'},
+        ]
+
+    monkeypatch.setattr(launch, 'run_process', run)
+    args = SimpleNamespace(repo=repo, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', model=None,
+                           depth='lite', resume=runtime, goal='test', requirements='test',
+                           task_paths='diff.patch', evidence='test')
+    result = launch.review(args)
+    assert result['runtime_adapter'] == 'claude'
 
 
 def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, monkeypatch):

@@ -41,7 +41,7 @@ def model_name(value: object, runtime_adapter: str) -> str:
 
 def allowed_model(value: object, runtime_adapter: str) -> str:
     value = model_name(value, runtime_adapter)
-    model_id = value.rpartition('/')[2]
+    model_id = value.partition('/')[2]
     if ((runtime_adapter == 'codex' and value != REVIEW_MODEL)
             or (runtime_adapter == 'opencode' and model_id != REVIEW_MODEL)):
         raise Blocked(f'only {REVIEW_MODEL} is allowed for {runtime_adapter}')
@@ -348,9 +348,17 @@ def review(args) -> dict:
         previous = json.loads((args.resume / 'session.json').read_text())
         if not isinstance(previous, dict):
             raise Blocked('legacy/incomplete reviewer session; start a new review')
-        if 'backend' in previous or 'runtime_adapter' not in previous:
-            raise Blocked('legacy/incomplete reviewer session; start a new review')
-        saved_runtime_adapter = previous['runtime_adapter']
+        if 'runtime_adapter' in previous:
+            saved_runtime_adapter = previous['runtime_adapter']
+            if (saved_runtime_adapter in ('codex', 'opencode')
+                    and 'backend' in previous):
+                raise Blocked('legacy/incomplete reviewer session; start a new review')
+            if previous.get('backend') not in (None, saved_runtime_adapter):
+                raise Blocked('conflicting saved runtime adapter; start a new review')
+        else:
+            saved_runtime_adapter = previous.get('backend')
+            if saved_runtime_adapter != 'claude':
+                raise Blocked('legacy/incomplete reviewer session; start a new review')
         required = {'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
         if saved_runtime_adapter is None or not required <= previous.keys():
             raise Blocked('legacy/incomplete reviewer session; start a new review')
