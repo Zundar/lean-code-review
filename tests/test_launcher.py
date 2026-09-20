@@ -516,16 +516,18 @@ def test_codex_result_uses_matching_persisted_thread(tmp_path):
     sessions.mkdir(parents=True)
     events = [{'type': 'thread.started', 'thread_id': 'current-thread'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+    matching = sessions / 'matching.jsonl'
+    unrelated = sessions / 'unrelated.jsonl'
+    matching.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
+    unrelated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'unrelated-thread'}}) + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
-    for name, thread_id, model in (
-        ('matching.jsonl', 'current-thread', 'matching-model'),
-        ('unrelated.jsonl', 'unrelated-thread', 'unrelated-model'),
-    ):
-        (sessions / name).write_text('\n'.join((
-            json.dumps({'type': 'session_meta', 'payload': {'id': thread_id}}),
-            json.dumps({'type': 'turn_context', 'payload': {
-                'model': model, 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})))
-                         + '\n')
+    with matching.open('a') as stream:
+        stream.write(json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'matching-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    with unrelated.open('a') as stream:
+        stream.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
+        stream.write(json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'unrelated-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
     assert launch.codex_result(events, tmp_path, offsets)[2]['model'] == 'matching-model'
 
 

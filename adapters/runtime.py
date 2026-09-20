@@ -264,7 +264,7 @@ def codex_result(events: list[dict], runtime: Path,
         with path.open() as stream:
             stream.seek(start)
             lines = stream.readlines()
-        session_ids = []
+        session_ids = [session_id] if session_id is not None else []
         current_contexts = []
         for line in lines:
             event = json.loads(line)
