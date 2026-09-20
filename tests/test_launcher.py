@@ -324,20 +324,26 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
-    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'gpt-5.6-terra')
+    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
 
-    observation = {}
+    observation = {'model': 'reported-snapshot', 'effort': 'medium'}
+    calls = []
 
     def run(argv, runtime, env, prompt, stem):
-        assert 'model="gpt-5.6-terra"' in argv
+        if calls:
+            assert 'model="reported-snapshot"' in argv
+        else:
+            assert not any(item.startswith('model=') for item in argv)
         assert 'sandbox_mode="read-only"' in argv and 'approval_policy="never"' in argv
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
-        context.write_text(json.dumps({'type': 'turn_context', 'payload': {
-            'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never', **observation}}))
+        with context.open('a') as stream:
+            stream.write(json.dumps({'type': 'turn_context', 'payload': {
+                'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never', **observation}}) + '\n')
         (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
+        calls.append(argv)
         return events
 
     monkeypatch.setattr(launch, 'run_process', run)
@@ -349,9 +355,8 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     assert first['usage'] == {'calls': 1, **codex['usage']}
-    assert first['model'] == 'gpt-5.6-terra' and first['reasoning_effort'] == 'medium'
-    assert first['observed'] == {'model': None, 'reasoning_effort': None}
-    observation.update(model='reported-snapshot', effort='medium')
+    assert first['model'] == 'reported-snapshot' and first['reasoning_effort'] == 'medium'
+    assert first['observed'] == {'model': 'reported-snapshot', 'reasoning_effort': 'medium'}
     args.resume = Path(first['runtime'])
     state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
@@ -364,6 +369,10 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
 
     assert second['session'] == first['session'] and second['sha256'] == args.sha256
     assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
+    observation['model'] = 'drifted-model'
+    with pytest.raises(launch.Blocked, match='differs from requested model'):
+        launch.review(args)
+    observation['model'] = 'reported-snapshot'
     events.pop()  # Unknown counters must not turn into zero or a partial session sum.
     assert 'usage' not in launch.review(args)
     (args.resume / 'review-1.jsonl').write_bytes(b'\xff')
@@ -404,8 +413,96 @@ def test_caller_context_and_depth(tmp_path):
         launch.resolve_runtime(ROOT, 'lite', 'opencode', 'bare-model')
     with pytest.raises(launch.Blocked, match='current runtime/model'):
         launch.resolve_runtime(ROOT, 'lite', 'opencode', None)
-    with pytest.raises(launch.Blocked, match='current runtime/model'):
-        launch.resolve_runtime(ROOT, 'lite', 'codex', None)
+    assert launch.resolve_runtime(ROOT, 'lite', 'codex', None) == {
+        'runtime_adapter': 'codex', 'model': None, 'reasoning_effort': 'medium'}
+
+
+def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
+    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
+    observed_model = [None]
+    args = SimpleNamespace(repo=repo, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', model=None, depth='lite', resume=None,
+                           goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+
+    def run(argv, runtime, env, prompt, stem):
+        assert any(item.startswith('model=') for item in argv) is (args.model is not None)
+        context = runtime / 'codex/sessions/run.jsonl'
+        context.parent.mkdir(parents=True, exist_ok=True)
+        payload = {'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}
+        if observed_model[0] is not None:
+            payload['model'] = observed_model[0]
+        context.write_text(json.dumps({'type': 'turn_context', 'payload': payload}))
+        events = [{'type': 'thread.started', 'thread_id': 'session'},
+                  {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+        (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
+        return events
+
+    monkeypatch.setattr(launch, 'run_process', run)
+    with pytest.raises(launch.Blocked, match='one effective model'):
+        launch.review(args)
+
+    observed_model[0] = 'observed-model'
+    args.model = 'requested-model'
+    with pytest.raises(launch.Blocked, match='differs from requested model'):
+        launch.review(args)
+    observed_model[0] = 'requested-model'
+    result = launch.review(args)
+    assert result['model'] == 'requested-model'
+
+
+def test_codex_resume_requires_current_turn_context(tmp_path):
+    path = tmp_path / 'codex/sessions/run.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'type': 'turn_context', 'payload': {
+        'model': 'old-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    events = [{'type': 'thread.started', 'thread_id': 'same-session'},
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+    offsets = launch.codex_context_offsets(tmp_path)
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, tmp_path, offsets)
+
+    same = json.dumps({'type': 'turn_context', 'payload': {
+        'model': 'old-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})
+    different = json.dumps({'type': 'turn_context', 'payload': {
+        'model': 'new-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})
+    path.write_text(same + '\n' + same + '\n')
+    assert launch.codex_result(events, tmp_path)[2]['model'] == 'old-model'
+    path.write_text(same + '\n' + different + '\n')
+    assert launch.codex_result(events, tmp_path)[2]['model'] is None
+
+    path.write_text(same + '\n')
+    offsets = launch.codex_context_offsets(tmp_path)
+    path.write_text(json.dumps({'type': 'turn_context', 'payload': {
+        'model': 'new', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, tmp_path, offsets)
+    path.write_text(same + '\n')
+    offsets = launch.codex_context_offsets(tmp_path)
+    replacement = path.with_suffix('.replacement')
+    replacement.write_text(different + '\n')
+    replacement.replace(path)
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, tmp_path, offsets)
+    path.write_text(same + '\n')
+    offsets = launch.codex_context_offsets(tmp_path)
+    path.write_text(same.replace('old-model', 'bad-model') + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, tmp_path, offsets)
+    path.write_text(same + '\n')
+    offsets = launch.codex_context_offsets(tmp_path)
+    with path.open('a') as stream:
+        stream.write(different + '\n')
+    assert launch.codex_result(events, tmp_path, offsets)[2]['model'] == 'new-model'
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):

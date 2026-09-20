@@ -80,21 +80,26 @@ review. The launcher does not expose that runtime adapter/model binding as a
 user selector, and does not inspect installed executables, process state,
 previous sessions, transcripts or mutable defaults to infer it. `--model`
 overrides only the model inside the bound runtime adapter; it never switches the
-executor. Missing or invalid caller context is BLOCKED before a model call. No
-fallback or adapter iteration occurs.
+executor. A Codex review may start without a caller model and must bind only the
+unambiguous effective model reported by its current `turn_context`; missing or
+mismatched observations are BLOCKED. No fallback or adapter iteration occurs.
 
 For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
-delegates to `lean-review`. Supply `--model` or `LEAN_REVIEW_CURRENT_MODEL` as
-the authoritative model; the wrapper does not infer one.
+delegates to `lean-review`. `--model` or `LEAN_REVIEW_CURRENT_MODEL` is an
+optional initial pin; without either, the child Codex chooses its default and
+the launcher binds only the unambiguous effective model from the current
+`turn_context`.
 
 Both depths may use one current or explicit model with their distinct canonical
 contracts and effort: OpenCode low/high, Codex medium/high; Claude has no explicit
 effort setting here.
 
 The existing `session.json` and result record the resolved `runtime_adapter`, `model`
-and configured `reasoning_effort`. `observed.model` and
-`observed.reasoning_effort` contain CLI-reported metadata when available, otherwise
-`null`; a requested model is not proof of the provider's underlying weights.
+and configured `reasoning_effort`. For Codex, `model` is the observed effective
+model from the current turn and the review is BLOCKED if it is absent, ambiguous,
+or differs from an explicit/current request. `observed.model` and
+`observed.reasoning_effort` contain CLI-reported metadata; a requested model is
+not proof of the provider's underlying weights.
 OpenCode's current parsed events do not provide that observation. Mutable model
 aliases may change upstream even while the requested identifier is pinned.
 

@@ -58,8 +58,10 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
         raise Blocked('current runtime adapter context is required')
     if model is None:
         model = current_model
-    if model is None:
+    if model is None and runtime_adapter != 'codex':
         raise Blocked('current runtime/model context is required')
+    if model is not None:
+        model = model_name(model, runtime_adapter)
     if runtime_adapter == 'codex':
         data = codex_profile(root, depth)
         effort = data['model_reasoning_effort']
@@ -71,7 +73,7 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
         effort = match[1]
     else:
         effort = None
-    return {'runtime_adapter': runtime_adapter, 'model': model_name(model, runtime_adapter),
+    return {'runtime_adapter': runtime_adapter, 'model': model,
             'reasoning_effort': effort}
 
 
@@ -99,12 +101,14 @@ def environment(runtime: Path, repo: Path) -> dict:
 def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
     data = codex_profile(root, depth)
     config = {
-        'model': selection['model'], 'model_reasoning_effort': data['model_reasoning_effort'],
+        'model_reasoning_effort': data['model_reasoning_effort'],
         'developer_instructions': data['developer_instructions'],
         'approval_policy': 'never', 'sandbox_mode': 'read-only',
         'web_search': 'disabled', 'features.multi_agent': False,
         'project_doc_max_bytes': 0,
     }
+    if selection['model'] is not None:
+        config['model'] = selection['model']
     argv = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--json']
     if not session:
         argv += ['--sandbox', 'read-only']
@@ -210,7 +214,21 @@ def reported_value(values: list) -> str | None:
     return values[0] if len(set(values)) == 1 else None
 
 
-def codex_result(events: list[dict], runtime: Path) -> tuple[str, str, dict]:
+def codex_context_offsets(runtime: Path) -> dict[Path, tuple[int, int, int, bytes]]:
+    sessions = runtime / 'codex/sessions'
+    if not sessions.exists():
+        return {}
+    offsets = {}
+    for path in sessions.rglob('*.jsonl'):
+        stat = path.stat()
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').digest()
+        offsets[path] = (stat.st_dev, stat.st_ino, stat.st_size, digest)
+    return offsets
+
+
+def codex_result(events: list[dict], runtime: Path,
+                 context_offsets: dict[Path, tuple[int, int, int, bytes]] | None = None) -> tuple[str, str, dict]:
     threads = [e['thread_id'] for e in events if e.get('type') == 'thread.started']
     messages = [e['item']['text'] for e in events if e.get('type') == 'item.completed'
                 and e.get('item', {}).get('type') == 'agent_message']
@@ -219,10 +237,26 @@ def codex_result(events: list[dict], runtime: Path) -> tuple[str, str, dict]:
     # Verify the persisted *effective* runtime, not the requested profile alone.
     contexts = []
     for path in (runtime / 'codex/sessions').rglob('*.jsonl'):
-        for line in path.read_text().splitlines():
+        start = 0
+        if context_offsets is not None:
+            previous = context_offsets.get(path)
+            if previous:
+                stat = path.stat()
+                if (stat.st_dev, stat.st_ino) != previous[:2] or stat.st_size < previous[2]:
+                    continue
+                with path.open('rb') as stream:
+                    if hashlib.sha256(stream.read(previous[2])).digest() != previous[3]:
+                        continue
+                start = previous[2]
+        with path.open() as stream:
+            stream.seek(start)
+            lines = stream.readlines()
+        for line in lines:
             event = json.loads(line)
             if event.get('type') == 'turn_context':
                 contexts.append(event['payload'])
+    if context_offsets is not None and not contexts:
+        raise Blocked('Codex returned no current turn context')
     if not contexts or any(c.get('sandbox_policy', {}).get('type') != 'read-only'
                            or c.get('approval_policy') != 'never' for c in contexts):
         raise Blocked('Codex effective session is not read-only/never')
@@ -346,8 +380,15 @@ def review(args) -> dict:
         if auth.is_file() and not link.exists():
             link.symlink_to(auth)
         argv = codex_command(ROOT, runtime, args.depth, selection, session)
+        context_offsets = codex_context_offsets(runtime)
         events = run_process(argv, runtime, env, packet, stem)
-        verdict, session, observed = codex_result(events, runtime)
+        verdict, session, observed = codex_result(events, runtime, context_offsets)
+        if observed['model'] is None:
+            raise Blocked('Codex did not report one effective model')
+        observed['model'] = model_name(observed['model'], 'codex')
+        if selection['model'] is not None and observed['model'] != selection['model']:
+            raise Blocked('Codex effective model differs from requested model')
+        selection = {**selection, 'model': observed['model']}
     elif runtime_adapter == 'opencode':
         if not previous:
             opencode_prepare(ROOT, runtime, args.depth, selection['model'])
