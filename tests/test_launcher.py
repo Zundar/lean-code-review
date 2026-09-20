@@ -488,14 +488,13 @@ def test_codex_resume_requires_current_turn_context(tmp_path):
 
     path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
-    path.write_text(json.dumps({'type': 'turn_context', 'payload': {
-        'model': 'new', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    path.write_text(meta + '\n' + same.replace('old-model', 'bad-model') + '\n')
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, offsets)
     path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     replacement = path.with_suffix('.replacement')
-    replacement.write_text(different + '\n')
+    replacement.write_text(meta + '\n' + different + '\n')
     replacement.replace(path)
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, offsets)
@@ -531,6 +530,56 @@ def test_codex_result_uses_matching_persisted_thread(tmp_path):
         stream.write(json.dumps({'type': 'turn_context', 'payload': {
             'model': 'unrelated-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
     assert launch.codex_result(events, tmp_path, offsets)[2]['model'] == 'matching-model'
+
+    missing = tmp_path / 'missing'
+    missing_sessions = missing / 'codex/sessions'
+    missing_sessions.mkdir(parents=True)
+    missing_path = missing_sessions / 'missing.jsonl'
+    missing_path.write_text(json.dumps({'type': 'turn_context', 'payload': {
+        'model': 'missing-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    missing_offsets = launch.codex_context_offsets(missing)
+    missing_path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n'
+                            + json.dumps({'type': 'turn_context', 'payload': {
+                                'model': 'missing-model', 'sandbox_policy': {'type': 'read-only'},
+                                'approval_policy': 'never'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, missing, missing_offsets)
+
+    conflict = tmp_path / 'conflict'
+    conflict_sessions = conflict / 'codex/sessions'
+    conflict_sessions.mkdir(parents=True)
+    conflict_path = conflict_sessions / 'conflict.jsonl'
+    conflict_path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
+    conflict_offsets = launch.codex_context_offsets(conflict)
+    with conflict_path.open('a') as stream:
+        stream.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'other-thread'}}) + '\n')
+        stream.write(json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'conflict-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, conflict, conflict_offsets)
+
+    unrelated_single = tmp_path / 'unrelated-single'
+    unrelated_single_sessions = unrelated_single / 'codex/sessions'
+    unrelated_single_sessions.mkdir(parents=True)
+    unrelated_single_path = unrelated_single_sessions / 'unrelated.jsonl'
+    unrelated_single_path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'other-thread'}}) + '\n')
+    unrelated_single_offsets = launch.codex_context_offsets(unrelated_single)
+    with unrelated_single_path.open('a') as stream:
+        stream.write(json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'unrelated-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, unrelated_single, unrelated_single_offsets)
+
+    for invalid_events in (
+        [{'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}],
+        [{'type': 'thread.started', 'thread_id': None},
+         {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}],
+        [{'type': 'thread.started', 'thread_id': 'one'},
+         {'type': 'thread.started', 'thread_id': 'two'},
+         {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}],
+    ):
+        with pytest.raises(launch.Blocked, match='completed reviewer turn'):
+            launch.codex_result(invalid_events, tmp_path)
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
