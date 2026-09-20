@@ -519,7 +519,9 @@ def test_codex_result_uses_matching_persisted_thread(tmp_path):
     matching = sessions / 'matching.jsonl'
     unrelated = sessions / 'unrelated.jsonl'
     matching.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
-    unrelated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'unrelated-thread'}}) + '\n')
+    unrelated.write_text('\n'.join((
+        json.dumps({'type': 'session_meta', 'payload': {'id': 'unrelated-thread'}}),
+        json.dumps({'type': 'session_meta', 'payload': {'id': 'stale-thread'}}))) + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     with matching.open('a') as stream:
         stream.write(json.dumps({'type': 'turn_context', 'payload': {
