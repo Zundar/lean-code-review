@@ -509,6 +509,38 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
     with pytest.raises(launch.Blocked, match='one matching session'):
         launch.codex_result(events, duplicate.parent.parent)
 
+    replacement = session_root('replacement', ('run.jsonl',)) / 'run.jsonl'
+    replacement.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
+                           + '\n' + old + '\n')
+    replacement_snapshot = replacement, replacement.stat().st_size
+    swapped = replacement.with_name('swapped.jsonl')
+    swapped.write_text(replacement.read_text() + new + '\n')
+    swapped.replace(replacement)
+    assert launch.codex_result(events, replacement.parent.parent.parent, replacement_snapshot)[2]['model'] == 'new-model'
+
+    renamed = session_root('renamed', ('run.jsonl',)) / 'run.jsonl'
+    renamed.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
+                       + '\n' + old + '\n')
+    renamed_snapshot = renamed, renamed.stat().st_size
+    renamed.rename(renamed.with_name('moved.jsonl'))
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, renamed.parent.parent.parent, renamed_snapshot)
+
+    truncated = session_root('truncated', ('run.jsonl',)) / 'run.jsonl'
+    truncated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
+                         + '\n' + old + '\n')
+    truncated_snapshot = truncated, truncated.stat().st_size
+    truncated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='no current turn context'):
+        launch.codex_result(events, truncated.parent.parent.parent, truncated_snapshot)
+
+    late = session_root('late', ('run.jsonl',)) / 'run.jsonl'
+    late.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'other-thread'}})
+                    + '\n' + json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
+                    + '\n' + new + '\n')
+    with pytest.raises(launch.Blocked, match='one matching session'):
+        launch.codex_result(events, late.parent.parent.parent)
+
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
     import subprocess
