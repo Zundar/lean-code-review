@@ -477,7 +477,8 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
     new = json.dumps({'type': 'turn_context', 'payload': {
         'model': 'new-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})
     matching.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}})
-                        + '\n' + old + '\n')
+                        + '\n' + old + '\n'
+                        + json.dumps({'type': 'session_meta', 'payload': {'id': 'stale-thread'}}) + '\n')
     unrelated.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'unrelated-thread'}})
                          + '\n')
     snapshot = matching, matching.stat().st_size
