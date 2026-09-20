@@ -214,33 +214,46 @@ def reported_value(values: list) -> str | None:
     return values[0] if len(set(values)) == 1 else None
 
 
-def codex_context_offsets(runtime: Path) -> dict[Path, tuple[int, int, int, bytes]]:
+def codex_context_offsets(runtime: Path) -> dict[Path, tuple[int, int, int, bytes, str | None]]:
     sessions = runtime / 'codex/sessions'
     if not sessions.exists():
         return {}
     offsets = {}
     for path in sessions.rglob('*.jsonl'):
         stat = path.stat()
+        digest = hashlib.sha256()
+        session_ids = []
         with path.open('rb') as stream:
-            digest = hashlib.file_digest(stream, 'sha256').digest()
-        offsets[path] = (stat.st_dev, stat.st_ino, stat.st_size, digest)
+            for line in stream:
+                digest.update(line)
+                event = json.loads(line)
+                if event.get('type') == 'session_meta':
+                    payload = event.get('payload')
+                    session_ids.append(payload.get('id') if isinstance(payload, dict) else None)
+        offsets[path] = (stat.st_dev, stat.st_ino, stat.st_size, digest.digest(),
+                         reported_value(session_ids))
     return offsets
 
 
 def codex_result(events: list[dict], runtime: Path,
-                 context_offsets: dict[Path, tuple[int, int, int, bytes]] | None = None) -> tuple[str, str, dict]:
-    threads = [e['thread_id'] for e in events if e.get('type') == 'thread.started']
+                 context_offsets: dict[Path, tuple[int, int, int, bytes, str | None]] | None = None) -> tuple[str, str, dict]:
+    threads = [e.get('thread_id') for e in events if e.get('type') == 'thread.started']
     messages = [e['item']['text'] for e in events if e.get('type') == 'item.completed'
                 and e.get('item', {}).get('type') == 'agent_message']
-    if not threads or not messages or any(e.get('type') in ('error', 'turn.failed') for e in events):
+    if (not threads or any(not isinstance(thread, str) or not thread for thread in threads)
+            or len(set(threads)) != 1 or not messages
+            or any(e.get('type') in ('error', 'turn.failed') for e in events)):
         raise Blocked('Codex returned no completed reviewer turn')
+    thread_id = threads[0]
     # Verify the persisted *effective* runtime, not the requested profile alone.
     contexts = []
     for path in (runtime / 'codex/sessions').rglob('*.jsonl'):
         start = 0
+        session_id = None
         if context_offsets is not None:
             previous = context_offsets.get(path)
             if previous:
+                session_id = previous[4]
                 stat = path.stat()
                 if (stat.st_dev, stat.st_ino) != previous[:2] or stat.st_size < previous[2]:
                     continue
@@ -251,10 +264,19 @@ def codex_result(events: list[dict], runtime: Path,
         with path.open() as stream:
             stream.seek(start)
             lines = stream.readlines()
+        session_ids = []
+        current_contexts = []
         for line in lines:
             event = json.loads(line)
+            if event.get('type') == 'session_meta':
+                payload = event.get('payload')
+                session_ids.append(payload.get('id') if isinstance(payload, dict) else None)
             if event.get('type') == 'turn_context':
-                contexts.append(event['payload'])
+                current_contexts.append(event['payload'])
+        if session_ids:
+            session_id = reported_value(session_ids)
+        if session_id == thread_id:
+            contexts.extend(current_contexts)
     if context_offsets is not None and not contexts:
         raise Blocked('Codex returned no current turn context')
     if not contexts or any(c.get('sandbox_policy', {}).get('type') != 'read-only'

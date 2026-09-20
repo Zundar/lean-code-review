@@ -255,8 +255,9 @@ def test_codex_effective_writable_session_rejected(tmp_path):
     path.parent.mkdir(parents=True)
     events = [{'type': 'thread.started', 'thread_id': 'id'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
-    path.write_text(json.dumps({'type': 'turn_context', 'payload': {
-        'sandbox_policy': {'type': 'danger-full-access'}, 'approval_policy': 'never'}}))
+    path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'id'}}) + '\n'
+                    + json.dumps({'type': 'turn_context', 'payload': {
+                        'sandbox_policy': {'type': 'danger-full-access'}, 'approval_policy': 'never'}}))
     with pytest.raises(launch.Blocked, match='effective session'):
         launch.codex_result(events, tmp_path)
 
@@ -339,7 +340,10 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
         assert 'sandbox_mode="read-only"' in argv and 'approval_policy="never"' in argv
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
+        new_session = not context.exists()
         with context.open('a') as stream:
+            if new_session:
+                stream.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'same-session'}}) + '\n')
             stream.write(json.dumps({'type': 'turn_context', 'payload': {
                 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never', **observation}}) + '\n')
         (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
@@ -441,7 +445,8 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
         payload = {'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}
         if observed_model[0] is not None:
             payload['model'] = observed_model[0]
-        context.write_text(json.dumps({'type': 'turn_context', 'payload': payload}))
+        context.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'session'}}) + '\n'
+                           + json.dumps({'type': 'turn_context', 'payload': payload}))
         events = [{'type': 'thread.started', 'thread_id': 'session'},
                   {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
         (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
@@ -463,7 +468,8 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
 def test_codex_resume_requires_current_turn_context(tmp_path):
     path = tmp_path / 'codex/sessions/run.jsonl'
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({'type': 'turn_context', 'payload': {
+    meta = json.dumps({'type': 'session_meta', 'payload': {'id': 'same-session'}})
+    path.write_text(meta + '\n' + json.dumps({'type': 'turn_context', 'payload': {
         'model': 'old-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
@@ -475,34 +481,52 @@ def test_codex_resume_requires_current_turn_context(tmp_path):
         'model': 'old-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})
     different = json.dumps({'type': 'turn_context', 'payload': {
         'model': 'new-model', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})
-    path.write_text(same + '\n' + same + '\n')
+    path.write_text(meta + '\n' + same + '\n' + same + '\n')
     assert launch.codex_result(events, tmp_path)[2]['model'] == 'old-model'
-    path.write_text(same + '\n' + different + '\n')
+    path.write_text(meta + '\n' + same + '\n' + different + '\n')
     assert launch.codex_result(events, tmp_path)[2]['model'] is None
 
-    path.write_text(same + '\n')
+    path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     path.write_text(json.dumps({'type': 'turn_context', 'payload': {
         'model': 'new', 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}}) + '\n')
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, offsets)
-    path.write_text(same + '\n')
+    path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     replacement = path.with_suffix('.replacement')
     replacement.write_text(different + '\n')
     replacement.replace(path)
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, offsets)
-    path.write_text(same + '\n')
+    path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     path.write_text(same.replace('old-model', 'bad-model') + '\n')
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, tmp_path, offsets)
-    path.write_text(same + '\n')
+    path.write_text(meta + '\n' + same + '\n')
     offsets = launch.codex_context_offsets(tmp_path)
     with path.open('a') as stream:
         stream.write(different + '\n')
     assert launch.codex_result(events, tmp_path, offsets)[2]['model'] == 'new-model'
+
+
+def test_codex_result_uses_matching_persisted_thread(tmp_path):
+    sessions = tmp_path / 'codex/sessions'
+    sessions.mkdir(parents=True)
+    events = [{'type': 'thread.started', 'thread_id': 'current-thread'},
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+    offsets = launch.codex_context_offsets(tmp_path)
+    for name, thread_id, model in (
+        ('matching.jsonl', 'current-thread', 'matching-model'),
+        ('unrelated.jsonl', 'unrelated-thread', 'unrelated-model'),
+    ):
+        (sessions / name).write_text('\n'.join((
+            json.dumps({'type': 'session_meta', 'payload': {'id': thread_id}}),
+            json.dumps({'type': 'turn_context', 'payload': {
+                'model': model, 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}})))
+                         + '\n')
+    assert launch.codex_result(events, tmp_path, offsets)[2]['model'] == 'matching-model'
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
