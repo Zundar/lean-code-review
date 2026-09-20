@@ -514,6 +514,8 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
                        + '\n' + old + '\n')
     stat = guarded.stat()
     guarded_snapshot = guarded, stat.st_dev, stat.st_ino, stat.st_size
+    with guarded.open('a') as stream:
+        stream.write(new + '\n')
     renamed = guarded.with_name('renamed.jsonl')
     guarded.rename(renamed)
     with pytest.raises(launch.Blocked, match='no current turn context'):
@@ -526,9 +528,11 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
     with pytest.raises(launch.Blocked, match='no current turn context'):
         launch.codex_result(events, guarded.parent.parent.parent, guarded_snapshot)
 
+    stat = guarded.stat()
+    truncation_snapshot = guarded, stat.st_dev, stat.st_ino, stat.st_size
     guarded.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'current-thread'}}) + '\n')
     with pytest.raises(launch.Blocked, match='no current turn context'):
-        launch.codex_result(events, guarded.parent.parent.parent, guarded_snapshot)
+        launch.codex_result(events, guarded.parent.parent.parent, truncation_snapshot)
 
 
 def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
