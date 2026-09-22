@@ -49,9 +49,9 @@ XDG config/cache/state, and external skill scans disabled. Only the existing aut
 removed. The target repository's `.opencode` files never load.
 
 The parent integration supplies the current runtime adapter and effective
-`provider/model` through the launch context. The launcher preserves that
-provider and pins the model part to `gpt-5.6-luna`; an explicit full
-`provider/gpt-5.6-luna` is also allowed. The same identifier and canonical effort
+`provider/model` through the launch context. The launcher preserves that exact
+model unless an explicit full `provider/model` override is supplied; both remain
+inside the OpenCode adapter. The same selected identifier and canonical effort
 are reapplied on resume, without rereading caller context. Provider credentials
 alone do not supply a custom transport/model definition. When the selected
 model is present in the resolved user-local config, the launcher copies only its
@@ -82,21 +82,21 @@ folders until final PASS; cleanup is always address-specific.
 ## Codex
 
 The `lean-review-codex` caller binds `runtime_adapter=codex` and delegates to
-the generic `lean-review` launcher. New and resumed reviews explicitly pin
-`gpt-5.6-luna`; an incompatible caller adapter or model is BLOCKED before the
-generic launcher or child process.
+the generic `lean-review` launcher. New reviews use the caller-bound current
+model unless an explicit `--model` overrides it; an incompatible caller adapter
+or malformed model is BLOCKED before the generic launcher or child process.
 
-Canonical profiles set medium effort for lite and high effort for strict. The
-Luna model is the same across depths.
+Canonical profiles set medium effort for lite and high effort for strict. Depth
+changes effort and contract, not the selected model.
 
-The Luna pin is never written into canonical assets. The launcher uses a new
+The selected model is never written into canonical assets. The launcher uses a new
 runtime Git root and isolated `CODEX_HOME`, linking only the existing auth
 file. User config/rules and project instructions are disabled; no project
 configuration is inherited. It runs `codex exec --sandbox read-only` with
 `approval_policy="never"`, disabled web search and delegation. The persisted
 turn context must prove effective read-only/never before accepting a result.
 A new review is BLOCKED when the current invocation reports an effective model
-other than Luna. For strict fixes,
+different from the selected current/explicit model. For strict fixes,
 `exec resume` keeps the same thread and explicitly reapplies the saved observed
 model and canonical read-only/never configuration; a current turn context is
 still required. Startup/auth/isolation failures are BLOCKED.

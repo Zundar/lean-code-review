@@ -79,25 +79,26 @@ The parent integration binds the current executor context before invoking a new
 review. The launcher does not expose that runtime adapter/model binding as a
 user selector, and does not inspect installed executables, process state,
 previous sessions, transcripts or mutable defaults to infer it. `--model` stays
-inside the bound runtime adapter and must identify the allowed Luna model; it
-never switches the executor. No fallback or adapter iteration occurs.
+inside the bound runtime adapter and overrides the caller's current model; when
+omitted, the bound current model is used. No fallback or adapter iteration
+occurs.
 
 For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
-delegates to `lean-review`. Every new or resumed Codex review explicitly pins
-`gpt-5.6-luna`; another explicit model or saved model is BLOCKED before launch.
+delegates to `lean-review`. New reviews use the caller-bound current model unless
+an explicit `--model` is provided; both stay in the Codex adapter.
 
-OpenCode preserves the bound provider and pins its model part to
-`gpt-5.6-luna`; Codex uses medium/high effort by depth. Claude keeps its current
-model contract and has no explicit effort setting here.
+OpenCode uses the caller-bound full `provider/model` unless an explicit full
+`provider/model` is provided; Codex uses medium/high effort by depth. Claude
+keeps its current/explicit model contract and has no explicit effort setting here.
 
 The existing `session.json` and result record the resolved `runtime_adapter`, `model`
-and configured `reasoning_effort`. For Codex, `model` is the pinned Luna request
-and `observed.model` must report the same effective model; missing, ambiguous, or
-mismatched observations are BLOCKED. `observed.model` and
+and configured `reasoning_effort`. For Codex, `observed.model` must report the
+same effective model selected by caller context or explicit override; missing,
+ambiguous, or mismatched observations are BLOCKED. `observed.model` and
 `observed.reasoning_effort` contain CLI-reported metadata; a requested model is
 not proof of the provider's underlying weights.
 OpenCode's current parsed events do not provide that observation. Mutable model
-aliases may change upstream even while the requested identifier is pinned.
+aliases may change upstream even while the requested identifier is retained.
 
 A resume uses only its saved runtime adapter/model/reasoning/session. A changed
 caller executor does not change the resumed session. Switching model requires a

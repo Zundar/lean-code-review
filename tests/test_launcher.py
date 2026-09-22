@@ -104,17 +104,17 @@ def test_doctor_reports_project_copy(tmp_path, monkeypatch):
     assert path.read_text() == 'foreign tool'
 
 
-def test_codex_override_is_local_and_read_only():
+def test_codex_model_selection_is_local_and_read_only():
     original = (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes()
-    selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'caller-model', launch.REVIEW_MODEL)
-    assert selection['model'] == launch.REVIEW_MODEL
-    assert launch.resolve_runtime(ROOT, 'strict', 'codex', 'gpt-5.6-astra')['model'] == launch.REVIEW_MODEL
+    selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'caller-model', 'explicit-model')
+    assert selection['model'] == 'explicit-model'
+    assert launch.resolve_runtime(ROOT, 'strict', 'codex', 'gpt-5.6-astra')['model'] == 'gpt-5.6-astra'
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
         command = launch.codex_command(ROOT, ROOT, 'strict', selection, session)
         assert 'sandbox_mode="read-only"' in command and 'approval_policy="never"' in command
         assert '--ignore-user-config' in command and '--ignore-rules' in command
-        assert f'model="{launch.REVIEW_MODEL}"' in command and 'model_reasoning_effort="high"' in command
+        assert 'model="explicit-model"' in command and 'model_reasoning_effort="high"' in command
         assert ('resume' in command) == bool(session)
 
 
@@ -170,8 +170,8 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
                         'npm': '@ai-sdk/openai-compatible',
                         'options': {'baseURL': source_base_url[0]},
                         'models': {
-                                'gpt-5.6-luna': {
-                                'name': 'GPT-5.6 Luna', 'reasoning': True,
+                                'model-a': {
+                                'name': 'Model A', 'reasoning': True,
                                 'limit': {'context': 272000, 'output': 128000, 'foreign': 'drop'},
                                 'variants': {
                                     'low': {'reasoningEffort': 'low'},
@@ -189,14 +189,14 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
         return original_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(launch.subprocess, 'run', source_config)
-    launch.opencode_prepare(ROOT, runtime, 'strict', 'vendor/gpt-5.6-luna')
-    assert check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/gpt-5.6-luna')['ok']
+    launch.opencode_prepare(ROOT, runtime, 'strict', 'vendor/model-a')
+    assert check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model-a')['ok']
     config = json.loads((runtime / 'config/opencode/opencode.json').read_text())
     assert config['provider'] == {'vendor': {
         'npm': '@ai-sdk/openai-compatible',
         'options': {'baseURL': 'https://provider.example/v1'},
-        'models': {'gpt-5.6-luna': {
-            'name': 'GPT-5.6 Luna', 'reasoning': True,
+        'models': {'model-a': {
+            'name': 'Model A', 'reasoning': True,
             'limit': {'context': 272000, 'output': 128000},
             'variants': {
                 'low': {'reasoningEffort': 'low'},
@@ -212,28 +212,28 @@ def test_opencode_selected_transport_is_allowlisted(tmp_path, monkeypatch):
         bad_runtime.mkdir(mode=0o700)
         launch.environment(bad_runtime, target)
         with pytest.raises(launch.Blocked, match='provider/model metadata'):
-            launch.opencode_prepare(ROOT, bad_runtime, 'strict', 'vendor/gpt-5.6-luna')
+            launch.opencode_prepare(ROOT, bad_runtime, 'strict', 'vendor/model-a')
     source_base_url[0] = 'https://provider.example/v1'
     config['provider']['vendor']['options']['apiKey'] = 'must-reject'
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='noncanonical'):
-        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/gpt-5.6-luna')
+        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model-a')
     config['provider']['vendor']['options'].pop('apiKey')
     for bad_url in ('https://user:secret@provider.example/v1',
                     'https://provider.example/v1?api_key=secret'):
         config['provider']['vendor']['options']['baseURL'] = bad_url
         (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
         with pytest.raises(CheckError, match='noncanonical'):
-            check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/gpt-5.6-luna')
+            check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model-a')
     config['provider']['vendor']['options']['baseURL'] = 'https://provider.example/v1'
-    config['provider']['vendor']['models']['gpt-5.6-luna']['variants']['high']['apiKey'] = 'must-reject'
+    config['provider']['vendor']['models']['model-a']['variants']['high']['apiKey'] = 'must-reject'
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='variants'):
-        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/gpt-5.6-luna')
+        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model-a')
     config['permission'] = {'*': 'allow'}
     (runtime / 'config/opencode/opencode.json').write_text(json.dumps(config))
     with pytest.raises(CheckError, match='noncanonical'):
-        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/gpt-5.6-luna')
+        check(ROOT, runtime, env, {}, agent, 'strict', 'vendor/model-a')
 
 
 def test_runtime_bytes_mismatch_blocks_before_provider_execution(tmp_path):
@@ -347,15 +347,15 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
-    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'caller-model')
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
 
-    observation = {'model': launch.REVIEW_MODEL, 'effort': 'medium'}
+    observation = {'model': 'caller-model', 'effort': 'medium'}
     calls = []
 
     def run(argv, runtime, env, prompt, stem):
-        assert f'model="{launch.REVIEW_MODEL}"' in argv
+        assert 'model="caller-model"' in argv
         assert 'sandbox_mode="read-only"' in argv and 'approval_policy="never"' in argv
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
@@ -378,21 +378,21 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     assert first['usage'] == {'calls': 1, **codex['usage']}
-    assert first['model'] == launch.REVIEW_MODEL and first['reasoning_effort'] == 'medium'
-    assert first['observed'] == {'model': launch.REVIEW_MODEL, 'reasoning_effort': 'medium'}
+    assert first['model'] == 'caller-model' and first['reasoning_effort'] == 'medium'
+    assert first['observed'] == {'model': 'caller-model', 'reasoning_effort': 'medium'}
     args.resume = Path(first['runtime'])
     state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
     second = launch.review(args)
     assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
-    assert second['observed'] == {'model': launch.REVIEW_MODEL, 'reasoning_effort': 'medium'}
+    assert second['observed'] == {'model': 'caller-model', 'reasoning_effort': 'medium'}
 
     assert second['session'] == first['session'] and second['sha256'] == args.sha256
     assert second['usage'] == {key: value * 2 for key, value in first['usage'].items()}
     observation['model'] = 'drifted-model'
     with pytest.raises(launch.Blocked, match='differs from requested model'):
         launch.review(args)
-    observation['model'] = launch.REVIEW_MODEL
+    observation['model'] = 'caller-model'
     events.pop()  # Unknown counters must not turn into zero or a partial session sum.
     assert 'usage' not in launch.review(args)
     (args.resume / 'review-1.jsonl').write_bytes(b'\xff')
@@ -406,11 +406,6 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
         with pytest.raises(launch.Blocked, match='retain model'):
             launch.review(args)
     args.model = None
-    saved = json.loads(state_file.read_text())
-    state_file.write_text(json.dumps({**saved, 'model': 'gpt-5.6-astra'}))
-    with pytest.raises(launch.Blocked, match='only gpt-5.6-luna is allowed'):
-        launch.review(args)
-    state_file.write_text(json.dumps(saved))
     legacy = {**saved}
     legacy['backend'] = legacy.pop('runtime_adapter')
     state_file.write_text(json.dumps(legacy))
@@ -434,12 +429,11 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
 def test_caller_context_and_depth(tmp_path):
     for depth, effort in (('lite', 'low'), ('strict', 'high')):
         assert launch.resolve_runtime(ROOT, depth, 'opencode', 'vendor/gpt-5.6-astra') == {
-            'runtime_adapter': 'opencode', 'model': 'vendor/gpt-5.6-luna', 'reasoning_effort': effort}
+            'runtime_adapter': 'opencode', 'model': 'vendor/gpt-5.6-astra', 'reasoning_effort': effort}
     assert launch.resolve_runtime(ROOT, 'lite', 'opencode', 'vendor/gpt-5.6-astra',
-                                  'vendor/gpt-5.6-luna')['model'] == 'vendor/gpt-5.6-luna'
-    with pytest.raises(launch.Blocked, match='bound provider'):
-        launch.resolve_runtime(ROOT, 'lite', 'opencode', 'vendor/gpt-5.6-astra',
-                               'other/gpt-5.6-luna')
+                                  'vendor/model-b')['model'] == 'vendor/model-b'
+    assert launch.resolve_runtime(ROOT, 'lite', 'opencode', 'vendor/gpt-5.6-astra',
+                                  'other/model-b')['model'] == 'other/model-b'
     assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model') == {
         'runtime_adapter': 'claude', 'model': 'current-model', 'reasoning_effort': None}
     assert launch.resolve_runtime(ROOT, 'strict', 'claude', 'current-model', 'override') == {
@@ -449,41 +443,7 @@ def test_caller_context_and_depth(tmp_path):
     with pytest.raises(launch.Blocked, match='current runtime/model'):
         launch.resolve_runtime(ROOT, 'lite', 'opencode', None)
     assert launch.resolve_runtime(ROOT, 'lite', 'codex', 'gpt-5.6-astra') == {
-        'runtime_adapter': 'codex', 'model': launch.REVIEW_MODEL, 'reasoning_effort': 'medium'}
-
-
-@pytest.mark.parametrize(('adapter', 'model'), (
-    ('codex', 'gpt-5.6-astra'),
-    ('codex', 'gpt-5.6-sol'),
-    ('codex', 'gpt-5.6-terra'),
-    ('opencode', 'vendor/gpt-6-astra'),
-    ('opencode', 'vendor/other/gpt-5.6-luna'),
-))
-def test_forbidden_model_blocks_before_child_or_provider_call(tmp_path, monkeypatch, adapter, model):
-    import subprocess
-
-    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
-    artifact = tmp_path / 'diff.patch'
-    artifact.write_text('exact diff')
-    provider_calls = []
-    original_run = launch.subprocess.run
-
-    def record_provider_call(argv, *args, **kwargs):
-        if argv and argv[0] in launch.RUNTIME_ADAPTERS:
-            provider_calls.append(argv)
-        return original_run(argv, *args, **kwargs)
-
-    monkeypatch.setattr(launch.subprocess, 'run', record_provider_call)
-    monkeypatch.setattr(launch.shutil, 'which', lambda _: pytest.fail('runtime lookup must not happen'))
-    monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected child call'))
-    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', adapter)
-    args = SimpleNamespace(repo=tmp_path, artifact=artifact,
-                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', model=model, depth='lite', resume=None,
-                           goal='test', requirements='test', task_paths='diff.patch', evidence='test')
-    with pytest.raises(launch.Blocked, match='only gpt-5.6-luna is allowed'):
-        launch.review(args)
-    assert provider_calls == []
+        'runtime_adapter': 'codex', 'model': 'gpt-5.6-astra', 'reasoning_effort': 'medium'}
 
 
 def test_claude_legacy_resume_keeps_compatibility(tmp_path, monkeypatch):
@@ -533,15 +493,16 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
-    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'current-model')
     observed_model = [None]
+    requested_model = ['current-model']
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                            base='0' * 40, target='worktree', model=None, depth='lite', resume=None,
                            goal='test', requirements='test', task_paths='diff.patch', evidence='test')
 
     def run(argv, runtime, env, prompt, stem):
-        assert f'model="{launch.REVIEW_MODEL}"' in argv
+        assert f'model="{requested_model[0]}"' in argv
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
         payload = {'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}
@@ -559,12 +520,13 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
         launch.review(args)
 
     observed_model[0] = 'observed-model'
-    args.model = launch.REVIEW_MODEL
+    args.model = 'explicit-model'
+    requested_model[0] = 'explicit-model'
     with pytest.raises(launch.Blocked, match='differs from requested model'):
         launch.review(args)
-    observed_model[0] = launch.REVIEW_MODEL
+    observed_model[0] = 'explicit-model'
     result = launch.review(args)
-    assert result['model'] == launch.REVIEW_MODEL
+    assert result['model'] == 'explicit-model'
 
 
 def test_codex_result_uses_exact_matching_session(tmp_path):
@@ -644,25 +606,26 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
         launch.codex_result(events, late.parent.parent.parent)
 
 
-def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch):
+@pytest.mark.parametrize('adapter', ('codex', 'opencode'))
+def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch, adapter):
     import subprocess
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
     artifact = tmp_path / 'diff.patch'
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(launch.shutil, 'which', lambda _: pytest.fail('runtime lookup must not happen'))
     monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected runtime call'))
-    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', adapter)
     monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
     args = SimpleNamespace(repo=tmp_path, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', runtime_adapter='opencode',
+                           base='0' * 40, target='worktree', runtime_adapter=adapter,
                            current_model=None, model=None, depth='strict', resume=None,
                            goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     with pytest.raises(launch.Blocked, match='current runtime/model'):
         launch.review(args)
 
 
-def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch):
+def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypatch):
     import subprocess
     _, repo, _, agent = isolated(tmp_path)
     subprocess.run(['git', 'init', '-q', str(repo)], check=True)
@@ -671,7 +634,7 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
-    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/gpt-5.6-astra')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/model-a')
     original_run = subprocess.run
 
     def source_config(argv, *args, **kwargs):
@@ -679,7 +642,7 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
             return SimpleNamespace(stdout=json.dumps({'provider': {
                 'vendor': {'npm': '@ai-sdk/openai-compatible',
                            'options': {'baseURL': 'https://provider.example/v1'},
-                           'models': {'gpt-5.6-luna': {'name': 'Model'}}}}}))
+                           'models': {'model-a': {'name': 'Model'}}}}}))
         return original_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(launch.subprocess, 'run', source_config)
@@ -689,7 +652,7 @@ def test_opencode_model_is_pinned_with_existing_isolation(tmp_path, monkeypatch)
     calls = []
 
     def run(argv, runtime, env, prompt, stem):
-        assert argv[argv.index('--model') + 1] == 'vendor/gpt-5.6-luna'
+        assert argv[argv.index('--model') + 1] == 'vendor/model-a'
         assert argv[argv.index('--agent') + 1] == 'spec-reviewer-strict'
         assert '--pure' in argv and env['HOME'] == str(runtime / 'home')
         assert ('--session' in argv) == bool(calls)
