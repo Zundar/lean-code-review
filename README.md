@@ -84,17 +84,19 @@ omitted, the bound current model is used. No fallback or adapter iteration
 occurs.
 
 For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
-delegates to `lean-review`. New reviews use the caller-bound current model unless
-an explicit `--model` is provided; both stay in the Codex adapter.
+delegates to `lean-review`. New reviews use the caller-bound current model or an
+explicit `--model` when provided. With neither, Codex starts without a model
+override and the reviewer binds the effective model observed in that turn's
+persisted context.
 
 OpenCode uses the caller-bound full `provider/model` unless an explicit full
 `provider/model` is provided; Codex uses medium/high effort by depth. Claude
 keeps its current/explicit model contract and has no explicit effort setting here.
 
 The existing `session.json` and result record the resolved `runtime_adapter`, `model`
-and configured `reasoning_effort`. For Codex, `observed.model` must report the
-same effective model selected by caller context or explicit override; missing,
-ambiguous, or mismatched observations are BLOCKED. `observed.model` and
+and configured `reasoning_effort`. For Codex, `observed.model` must report one
+effective model; missing or ambiguous observations are BLOCKED, as is a mismatch
+with any caller-bound or explicit model. `observed.model` and
 `observed.reasoning_effort` contain CLI-reported metadata; a requested model is
 not proof of the provider's underlying weights.
 OpenCode's current parsed events do not provide that observation. Mutable model

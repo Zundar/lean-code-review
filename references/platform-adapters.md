@@ -83,8 +83,10 @@ folders until final PASS; cleanup is always address-specific.
 
 The `lean-review-codex` caller binds `runtime_adapter=codex` and delegates to
 the generic `lean-review` launcher. New reviews use the caller-bound current
-model unless an explicit `--model` overrides it; an incompatible caller adapter
-or malformed model is BLOCKED before the generic launcher or child process.
+model or an explicit `--model` override when provided. If neither is set, Codex
+starts without a model override and the launcher binds the effective model from
+the current persisted turn context. An incompatible caller adapter or malformed
+provided model is BLOCKED before the child process.
 
 Canonical profiles set medium effort for lite and high effort for strict. Depth
 changes effort and contract, not the selected model.
@@ -95,8 +97,9 @@ file. User config/rules and project instructions are disabled; no project
 configuration is inherited. It runs `codex exec --sandbox read-only` with
 `approval_policy="never"`, disabled web search and delegation. The persisted
 turn context must prove effective read-only/never before accepting a result.
-A new review is BLOCKED when the current invocation reports an effective model
-different from the selected current/explicit model. For strict fixes,
+A new review is BLOCKED when the current invocation does not report one
+effective model, or reports a model different from the selected current/explicit
+model. For strict fixes,
 `exec resume` keeps the same thread and explicitly reapplies the saved observed
 model and canonical read-only/never configuration; a current turn context is
 still required. Startup/auth/isolation failures are BLOCKED.

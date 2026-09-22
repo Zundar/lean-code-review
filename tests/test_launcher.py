@@ -109,6 +109,10 @@ def test_codex_model_selection_is_local_and_read_only():
     selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'caller-model', 'explicit-model')
     assert selection['model'] == 'explicit-model'
     assert launch.resolve_runtime(ROOT, 'strict', 'codex', 'gpt-5.6-astra')['model'] == 'gpt-5.6-astra'
+    model_free = launch.resolve_runtime(ROOT, 'strict', 'codex', None)
+    assert model_free['model'] is None
+    assert not any(arg.startswith('model=') for arg in
+                   launch.codex_command(ROOT, ROOT, 'strict', model_free, None))
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
         command = launch.codex_command(ROOT, ROOT, 'strict', selection, session)
@@ -493,23 +497,32 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
-    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'current-model')
+    monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
     observed_model = [None]
-    requested_model = ['current-model']
+    requested_model = [None]
+    calls = []
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                            base='0' * 40, target='worktree', model=None, depth='lite', resume=None,
                            goal='test', requirements='test', task_paths='diff.patch', evidence='test')
 
     def run(argv, runtime, env, prompt, stem):
-        assert f'model="{requested_model[0]}"' in argv
+        model_options = [arg for arg in argv if arg.startswith('model=')]
+        assert model_options == ([] if requested_model[0] is None
+                                 else [f'model={json.dumps(requested_model[0])}'])
+        calls.append(argv)
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
         payload = {'sandbox_policy': {'type': 'read-only'}, 'approval_policy': 'never'}
         if observed_model[0] is not None:
             payload['model'] = observed_model[0]
-        context.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'session'}}) + '\n'
-                           + json.dumps({'type': 'turn_context', 'payload': payload}))
+        turn = json.dumps({'type': 'turn_context', 'payload': payload}) + '\n'
+        if 'resume' in argv:
+            with context.open('a') as stream:
+                stream.write(turn)
+        else:
+            context.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'session'}})
+                               + '\n' + turn)
         events = [{'type': 'thread.started', 'thread_id': 'session'},
                   {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
         (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
@@ -520,6 +533,23 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
         launch.review(args)
 
     observed_model[0] = 'observed-model'
+    result = launch.review(args)
+    assert result['model'] == 'observed-model'
+    args.resume = Path(result['runtime'])
+    requested_model[0] = 'observed-model'
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'changed-caller-model')
+    resumed = launch.review(args)
+    assert resumed['model'] == 'observed-model' and resumed['session'] == result['session']
+    assert calls[0].count('resume') == calls[1].count('resume') == 0
+    assert calls[2][calls[2].index('resume') + 1] == 'session'
+    assert 'model="observed-model"' in calls[2]
+
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'current-model')
+    requested_model[0] = 'current-model'
+    args.resume = None
+    with pytest.raises(launch.Blocked, match='differs from requested model'):
+        launch.review(args)
+
     args.model = 'explicit-model'
     requested_model[0] = 'explicit-model'
     with pytest.raises(launch.Blocked, match='differs from requested model'):
@@ -606,19 +636,18 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
         launch.codex_result(events, late.parent.parent.parent)
 
 
-@pytest.mark.parametrize('adapter', ('codex', 'opencode'))
-def test_missing_current_context_blocks_before_runtime_call(tmp_path, monkeypatch, adapter):
+def test_opencode_without_current_model_blocks_before_runtime_call(tmp_path, monkeypatch):
     import subprocess
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
     artifact = tmp_path / 'diff.patch'
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(launch.shutil, 'which', lambda _: pytest.fail('runtime lookup must not happen'))
     monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected runtime call'))
-    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', adapter)
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
     monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
     args = SimpleNamespace(repo=tmp_path, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                           base='0' * 40, target='worktree', runtime_adapter=adapter,
+                           base='0' * 40, target='worktree', runtime_adapter='opencode',
                            current_model=None, model=None, depth='strict', resume=None,
                            goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     with pytest.raises(launch.Blocked, match='current runtime/model'):
