@@ -58,9 +58,10 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
         raise Blocked('current runtime adapter context is required')
     if model is None:
         model = current_model
-    if model is None:
+    if model is None and runtime_adapter != 'codex':
         raise Blocked('current runtime/model context is required')
-    model = model_name(model, runtime_adapter)
+    if model is not None:
+        model = model_name(model, runtime_adapter)
     if runtime_adapter == 'codex':
         data = codex_profile(root, depth)
         effort = data['model_reasoning_effort']
@@ -100,13 +101,14 @@ def environment(runtime: Path, repo: Path) -> dict:
 def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
     data = codex_profile(root, depth)
     config = {
-        'model': model_name(selection['model'], 'codex'),
         'model_reasoning_effort': data['model_reasoning_effort'],
         'developer_instructions': data['developer_instructions'],
         'approval_policy': 'never', 'sandbox_mode': 'read-only',
         'web_search': 'disabled', 'features.multi_agent': False,
         'project_doc_max_bytes': 0,
     }
+    if selection['model'] is not None:
+        config['model'] = model_name(selection['model'], 'codex')
     argv = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--json']
     if not session:
         argv += ['--sandbox', 'read-only']
