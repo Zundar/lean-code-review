@@ -108,6 +108,28 @@ provider package, malformed session identity, unsafe endpoint, extra credential
 fields, or ambiguous model match fails closed. OpenCode 1 retains its existing
 adapter and plugin contract.
 
+A model reference alone is not sufficient for this separate-process boundary.
+In the version-matched OpenCode V2 source, `Model.Ref` carries only provider ID,
+model ID, and optional variant; the native subagent resolver looks up that
+reference in `Model.available()` and rejects a missing model or variant. The
+model catalog is materialized from available provider definitions. In the
+isolated probe, retaining the exact caller-bound reference and linked account
+auth while excluding user/project config and model fetch left both the provider
+and model APIs empty; the reference parsed from config, but no native catalog
+entry existed to resolve it. The isolated effective config retained only the
+reviewer plugin, deny-all permissions with the three bounded reviewer tools
+allowed, and no MCP servers; the existing auth-store symlink was present and
+its contents were not inspected. Plugin tool activation and an authenticated
+model request were not reached after catalog resolution failed. Continue to
+pass an allowlisted provider definition (package and non-secret route settings)
+and the selected model definition (upstream model ID and selected variant
+metadata) until a supported native catalog snapshot is available inside the
+same isolation boundary. The
+probe used OpenCode `v2.0.14` (`anomalyco/opencode` tag commit
+`08462140ec0de1e4b17d4a353d8d5827f53cf7b0`); its bounded model invocation did
+not create a session before timing out, so the conclusion is based on the
+mechanical catalog-resolution blocker, not a successful model response.
+
 ## Codex
 
 The `lean-review-codex` caller binds `runtime_adapter=codex` and delegates to
