@@ -9,8 +9,10 @@ const SECRET_KEY = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secr
 
 function redact(value: string): string {
   return value
+    .replace(/(--authorization(?:=|\s+))(?:["']?(?:bearer|basic)\s+[^"'\r\n]+["']?)/giu, "$1[REDACTED]")
     .replace(/(--(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|authorization)(?:=|\s+))\S+/giu, "$1[REDACTED]")
     .replace(/\b(authorization)\s*:\s*(?:bearer|basic)\s+\S+/giu, "$1: [REDACTED]")
+    .replace(/(invalid choice:\s+)["'][^\r\n]*?["'](\s+\(choose from\s+[^)\r\n]*\))/giu, "$1[REDACTED]$2")
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)\s*[:=]\s*([^\s,'"}\]]+)/giu, "$1=[REDACTED]")
     .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/giu, "https://[REDACTED]@")
     .replace(/([?&](?:key|token|secret|password|authorization)=)[^&\s]+/giu, "$1[REDACTED]")
