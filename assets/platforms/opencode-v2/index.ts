@@ -5,7 +5,7 @@ import { bindSession, reviewEnvironment } from "./binding.mjs"
 
 const MAX_OUTPUT = 1024 * 1024
 const TIMEOUT_MS = 900_000
-const SECRET_KEY = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)/iu
+const SECRET_KEY = /(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)(?:$|[_-])/iu
 
 function redact(value: string): string {
   return value
@@ -29,7 +29,7 @@ function safeStructuredOutput(output: string): string | undefined {
       if (!item || typeof item !== "object") return typeof item === "string" ? redact(item) : item
       return Object.fromEntries(Object.entries(item).map(([key, child]) => [
         key,
-        SECRET_KEY.test(key) ? "[REDACTED]" : scrub(child),
+        SECRET_KEY.test(key.replace(/([a-z0-9])([A-Z])/gu, "$1_$2")) ? "[REDACTED]" : scrub(child),
       ]))
     }
     return JSON.stringify(scrub(value))

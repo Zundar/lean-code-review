@@ -45,8 +45,8 @@ async function command(body, searchPath = `${bin}:/usr/bin:/bin`) {
 assert.equal(await command("printf 'plain output'"), "plain output")
 assert.equal(await command(`printf '%s' '{"verdict":"PASS","summary":"ok"}'`),
   '{"verdict":"PASS","summary":"ok"}')
-assert.equal(await command(`printf '%s' '{"verdict":"BLOCKED","reason":"preflight","apiKey":"private-value"}'; exit 1`),
-  '{"verdict":"BLOCKED","reason":"preflight","apiKey":"[REDACTED]"}')
+assert.equal(await command(`printf '%s' '{"verdict":"BLOCKED","reason":"preflight","usage":{"input_tokens":123,"cached_input_tokens":45,"output_tokens":67},"apiKey":"private-value"}'; exit 1`),
+  '{"verdict":"BLOCKED","reason":"preflight","usage":{"input_tokens":123,"cached_input_tokens":45,"output_tokens":67},"apiKey":"[REDACTED]"}')
 assert.equal(await command(`printf '%s' '{"verdict":"NEEDS_EVIDENCE","reason":"F1"}'; exit 2`),
   '{"verdict":"NEEDS_EVIDENCE","reason":"F1"}')
 const usage = await command(`echo 'usage: lean-review --token private-value' >&2; echo 'error: bad option' >&2; exit 2`)
