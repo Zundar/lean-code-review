@@ -16,6 +16,7 @@ import tomllib
 
 from scripts.check_opencode_lean_review import CheckError, canonical, check, https_endpoint, profile
 from scripts.install import ROOT
+from adapters.opencode_v2 import V2MetadataError, safe_metadata, v2_provider_config
 
 RUNTIME_ADAPTERS = ('codex', 'opencode', 'claude')
 
@@ -96,6 +97,48 @@ def environment(runtime: Path, repo: Path) -> dict:
     if auth_source.is_file() and not auth_target.exists():
         auth_target.symlink_to(auth_source)
     return env
+
+
+def opencode_v2_environment(runtime: Path, repo: Path, depth: str, model: str, effort: str) -> dict:
+    env = environment(runtime, repo)
+    sensitive = re.compile(r'(?:API.?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION)', re.IGNORECASE)
+    env = {key: value for key, value in env.items()
+           if not sensitive.search(key) or key in {'OPENCODE_DISABLE_EXTERNAL_SKILLS',
+               'OPENCODE_DISABLE_PROJECT_CONFIG', 'OPENCODE_DISABLE_MODELS_FETCH'}}
+    env['LEAN_REVIEW_V2_DEPTH'] = depth
+    env['LEAN_REVIEW_V2_MODEL'] = f'{model}#{effort}'
+    return env
+
+
+def opencode_major_version() -> int:
+    executable = os.environ.get('LEAN_REVIEW_OPENCODE_CLI') or shutil.which('opencode')
+    if not executable or (os.environ.get('LEAN_REVIEW_OPENCODE_CLI') and not Path(executable).is_absolute()):
+        raise Blocked('OpenCode executable is unavailable')
+    try:
+        result = subprocess.run([executable, '--version'], capture_output=True, text=True,
+                                timeout=10, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Blocked('OpenCode version preflight failed') from exc
+    version = result.stdout.strip()
+    match = re.search(r'\b(?:opencode\s+)?v?(\d+)\.', version, re.IGNORECASE)
+    if not match:
+        raise Blocked('OpenCode version is not identifiable')
+    expected = os.environ.get('LEAN_REVIEW_OPENCODE_VERSION')
+    if expected and expected not in (version, version.removeprefix('opencode '),
+                                     version.removeprefix('opencode v')):
+        raise Blocked('OpenCode executable version differs from the current V2 host')
+    return int(match[1])
+
+
+def opencode_v2_executable() -> str:
+    executable = os.environ.get('LEAN_REVIEW_OPENCODE_CLI')
+    if not executable or not Path(executable).is_absolute():
+        raise Blocked('OpenCode V2 caller did not provide its executable identity')
+    if not os.environ.get('LEAN_REVIEW_OPENCODE_VERSION'):
+        raise Blocked('OpenCode V2 caller did not provide its host version')
+    if opencode_major_version() < 2:
+        raise Blocked('OpenCode V2 caller executable is not V2')
+    return executable
 
 
 def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
@@ -190,6 +233,115 @@ def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = 
                            'options': {'baseURL': options['baseURL']},
                            'models': {model_id: selected}}}
     private_file(config / 'opencode.json', (json.dumps(data, separators=(',', ':')) + '\n').encode())
+
+
+def opencode_v2_prepare(root: Path, runtime: Path, depth: str, model: str,
+                        metadata: str | dict, env: dict) -> dict:
+    import yaml
+
+    safe = safe_metadata(metadata, model)
+    profile_bytes = canonical(root, f'assets/platforms/opencode/spec-reviewer-{depth}.md')
+    raw_profile = yaml.safe_load(profile_bytes.decode().split('---', 2)[1])
+    effort = raw_profile.get('reasoningEffort')
+    variants = safe['model'].get('variants', [])
+    if not any(variant.get('id') == effort for variant in variants):
+        raise Blocked('OpenCode V2 current model does not expose the canonical reviewer reasoning variant')
+
+    provider_config = v2_provider_config(safe)
+    reviewer = canonical(root, 'assets/platforms/opencode-v2/reviewer.ts')
+    package = canonical(root, 'assets/platforms/opencode-v2/package.json')
+    package_lock = canonical(root, 'assets/platforms/opencode-v2/package-lock.json')
+    system = profile_bytes.decode().split('---', 2)[2].strip()
+    denied = [{'action': '*', 'resource': '*', 'effect': 'deny'}]
+    allowed = [{'action': f'lean_review_{name}', 'resource': '*', 'effect': 'allow'}
+               for name in ('read', 'list', 'grep')]
+    config_data = {
+        '$schema': 'https://opencode.ai/config.json',
+        **provider_config,
+        'share': 'disabled',
+        'update': 'disable',
+        'plugins': ['./plugins/reviewer-tools'],
+        'agents': {
+            f'spec-reviewer-{depth}': {
+                'description': raw_profile['description'],
+                'mode': 'primary',
+                'model': f'{model}#{effort}',
+                'system': system,
+                'permissions': denied + allowed,
+            },
+        },
+    }
+    config = runtime / 'config/opencode'
+    plugin_dir = config / 'plugins/reviewer-tools'
+    plugin_dir.mkdir(mode=0o700, parents=True)
+    private_file(plugin_dir / 'index.ts', reviewer)
+    private_file(plugin_dir / 'package.json', package)
+    private_file(plugin_dir / 'package-lock.json', package_lock)
+    install_opencode_v2_plugin(plugin_dir, env)
+    private_file(config / 'opencode.json',
+                 (json.dumps(config_data, separators=(',', ':')) + '\n').encode())
+    return safe
+
+
+def install_opencode_v2_plugin(plugin_dir: Path, env: dict) -> None:
+    cache = Path.home() / '.cache/lean-code-review/npm'
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(cache, 0o700)
+    env = {**env, 'npm_config_cache': str(cache)}
+    try:
+        subprocess.run(['npm', 'ci', '--prefix', str(plugin_dir), '--ignore-scripts',
+                        '--no-audit', '--no-fund'],
+                       cwd=plugin_dir, env=env, capture_output=True, text=True,
+                       timeout=180, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Blocked('OpenCode V2 plugin dependencies could not be installed in the isolated runtime') from exc
+
+
+def check_opencode_v2(root: Path, runtime: Path, env: dict, depth: str, model: str,
+                      metadata: dict) -> None:
+    config = runtime / 'config/opencode'
+    settings_path = config / 'opencode.json'
+    plugin_dir = config / 'plugins/reviewer-tools'
+    plugin_path = plugin_dir / 'index.ts'
+    package_path = plugin_dir / 'package.json'
+    package_lock_path = plugin_dir / 'package-lock.json'
+    if (settings_path.is_symlink() or not settings_path.is_file()
+            or plugin_dir.is_symlink() or not plugin_dir.is_dir()
+            or plugin_path.is_symlink() or not plugin_path.is_file()
+            or package_path.is_symlink() or not package_path.is_file()
+            or package_lock_path.is_symlink() or not package_lock_path.is_file()):
+        raise CheckError('OpenCode V2 runtime config is incomplete')
+    try:
+        value = json.loads(settings_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise CheckError('OpenCode V2 runtime config is malformed') from exc
+    expected_model = f'{model}#{"low" if depth == "lite" else "high"}'
+    agent_id = f'spec-reviewer-{depth}'
+    expected_permissions = ([{'action': '*', 'resource': '*', 'effect': 'deny'}]
+                            + [{'action': f'lean_review_{name}', 'resource': '*', 'effect': 'allow'}
+                               for name in ('read', 'list', 'grep')])
+    expected_keys = {'$schema', 'model', 'providers', 'share', 'update', 'plugins', 'agents'}
+    if (not isinstance(value, dict) or set(value) != expected_keys
+            or not isinstance(value.get('agents'), dict)
+            or value.get('providers') != v2_provider_config(metadata)['providers']
+            or value.get('model') != model
+            or value.get('share') != 'disabled' or value.get('update') != 'disable'
+            or value.get('plugins') != ['./plugins/reviewer-tools']
+            or set(value.get('agents', {})) != {agent_id}
+            or value['agents'][agent_id].get('model') != expected_model
+            or value['agents'][agent_id].get('mode') != 'primary'
+            or value['agents'][agent_id].get('permissions') != expected_permissions
+            or value.get('mcp') or value.get('plugin') or value.get('provider')
+            or 'providers' not in value):
+        raise CheckError('OpenCode V2 runtime isolation config mismatch')
+    if plugin_path.read_bytes() != canonical(root, 'assets/platforms/opencode-v2/reviewer.ts'):
+        raise CheckError('OpenCode V2 reviewer tool plugin differs from canonical bytes')
+    if package_path.read_bytes() != canonical(root, 'assets/platforms/opencode-v2/package.json'):
+        raise CheckError('OpenCode V2 plugin dependencies differ from canonical bytes')
+    if package_lock_path.read_bytes() != canonical(root, 'assets/platforms/opencode-v2/package-lock.json'):
+        raise CheckError('OpenCode V2 plugin dependency lock differs from canonical bytes')
+    if env.get('OPENCODE_DISABLE_EXTERNAL_SKILLS') != '1':
+        raise CheckError('external skill scans must be disabled')
 
 
 def run_process(argv: list[str], runtime: Path, env: dict, prompt: str, stem: str) -> list[dict]:
@@ -317,6 +469,8 @@ def review(args) -> dict:
         raise Blocked('target must be worktree or commit:<immutable SHA>')
     home = Path.home()
     previous = None
+    opencode_major = None
+    opencode_metadata = None
     if args.resume:
         cache = (home / '.cache/lean-code-review').resolve()
         if args.resume.is_symlink() or args.resume.resolve().parent != cache:
@@ -353,6 +507,12 @@ def review(args) -> dict:
                                     previous['model'], previous['model'])
         if selection['reasoning_effort'] != previous['reasoning_effort']:
             raise Blocked('saved reasoning effort differs from canonical reviewer contract')
+        opencode_major = previous.get('opencode_major')
+        if opencode_major == 2:
+            try:
+                opencode_metadata = safe_metadata(previous.get('opencode_v2_metadata'), previous['model'])
+            except V2MetadataError as exc:
+                raise Blocked('saved OpenCode V2 provider/model metadata is incomplete') from exc
         runtime = args.resume.resolve(strict=True)
     else:
         runtime_adapter, current_model = caller_context()
@@ -360,6 +520,14 @@ def review(args) -> dict:
     runtime_adapter = selection['runtime_adapter']
     if not shutil.which(runtime_adapter):
         raise Blocked('current runtime CLI is unavailable')
+    if runtime_adapter == 'opencode' and not previous:
+        opencode_major = opencode_major_version()
+        if opencode_major >= 2:
+            metadata = os.environ.get('LEAN_REVIEW_OPENCODE_V2_METADATA')
+            try:
+                opencode_metadata = safe_metadata(metadata, selection['model'])
+            except V2MetadataError as exc:
+                raise Blocked(str(exc)) from exc
     identity = skill_identity()
     if previous:
         if previous['skill_identity'] != identity:
@@ -369,7 +537,10 @@ def review(args) -> dict:
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         runtime = Path(tempfile.mkdtemp(prefix='review-', dir=cache))
         subprocess.run(['git', 'init', '-q', str(runtime)], check=True, capture_output=True)
-    env = environment(runtime, repo)
+    env = (opencode_v2_environment(runtime, repo, args.depth, selection['model'],
+                                   selection['reasoning_effort'])
+           if runtime_adapter == 'opencode' and opencode_major is not None and opencode_major >= 2
+           else environment(runtime, repo))
     stem = f'review-{len(list(runtime.glob("review-*.patch"))) + 1}'
     artifact = runtime / f'{stem}.patch'
     private_file(artifact, data)
@@ -402,11 +573,21 @@ def review(args) -> dict:
             raise Blocked('Codex effective model differs from requested model')
         selection = {**selection, 'model': observed['model']}
     elif runtime_adapter == 'opencode':
-        if not previous:
-            opencode_prepare(ROOT, runtime, args.depth, selection['model'])
-        check(ROOT, runtime, env, depth=args.depth, model=selection['model'])
-        argv = ['opencode', 'run', '--pure', '--agent', f'spec-reviewer-{args.depth}', '--format', 'json']
-        argv += ['--model', selection['model']]
+        if opencode_major is not None and opencode_major >= 2:
+            if not previous:
+                opencode_metadata = opencode_v2_prepare(
+                    ROOT, runtime, args.depth, selection['model'], opencode_metadata, env)
+            check_opencode_v2(ROOT, runtime, env, args.depth, selection['model'], opencode_metadata)
+            effort = selection['reasoning_effort']
+            argv = [opencode_v2_executable(), 'run', '--standalone', '--agent',
+                    f'spec-reviewer-{args.depth}', '--format', 'json']
+            argv += ['--model', f'{selection["model"]}#{effort}']
+        else:
+            if not previous:
+                opencode_prepare(ROOT, runtime, args.depth, selection['model'])
+            check(ROOT, runtime, env, depth=args.depth, model=selection['model'])
+            argv = ['opencode', 'run', '--pure', '--agent', f'spec-reviewer-{args.depth}', '--format', 'json']
+            argv += ['--model', selection['model']]
         if session:
             argv += ['--session', session]
         events = run_process(argv, runtime, env, packet, stem)
@@ -452,6 +633,8 @@ def review(args) -> dict:
         raise Blocked(f'reviewer returned no valid final verdict; inspect {runtime}')
     state = {**selection, 'depth': args.depth, 'repo': str(repo), 'session': session,
              'skill_identity': identity, 'observed': observed}
+    if opencode_major is not None and opencode_major >= 2:
+        state.update(opencode_major=opencode_major, opencode_v2_metadata=opencode_metadata)
     (runtime / 'session.json').write_text(json.dumps(state))
     usage = session_usage(runtime, runtime_adapter)
     return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
@@ -459,7 +642,8 @@ def review(args) -> dict:
 
 
 def skill_identity() -> str:
-    paths = ['SKILL.md', 'adapters/runtime.py', 'scripts/check_opencode_lean_review.py']
+    paths = ['SKILL.md', 'adapters/runtime.py', 'adapters/opencode_v2.py',
+             'scripts/check_opencode_lean_review.py']
     paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT / 'assets/platforms').rglob('*')) if p.is_file()]
     return hashlib.sha256(b''.join(canonical(ROOT, p) for p in paths)).hexdigest()
 

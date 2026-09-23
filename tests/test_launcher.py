@@ -662,6 +662,7 @@ def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypat
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
+    monkeypatch.setattr(launch, 'opencode_major_version', lambda: 1)
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
     monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/model-a')
     original_run = subprocess.run

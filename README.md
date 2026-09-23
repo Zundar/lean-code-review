@@ -72,7 +72,8 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 | Runtime adapter | Launcher contract |
 | --- | --- |
 | Codex | Separate persisted `exec` process; read-only sandbox, approvals never, isolated config, effective session verification |
-| OpenCode | Fresh isolated HOME/XDG/config, canonical provider identity check, deny by default, bounded read/list/grep only |
+| OpenCode 1 | Fresh isolated HOME/XDG/config, canonical provider identity check, deny by default, bounded read/list/grep only |
+| OpenCode 2 | Session-aware `/lean-review` command, V2 provider/model API preflight, native isolated config, deny by default, bounded read/list/grep only |
 | Claude | Canonical reviewer prompt, isolated config, only Read/Grep/Glob, no MCP or hooks, effective tool catalog verification |
 
 The parent integration binds the current executor context before invoking a new

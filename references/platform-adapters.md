@@ -41,7 +41,7 @@ validates SHA-256 before and after the run; its private copy is read-only and
 its complete contents are delivered in the reviewer packet. A changed digest
 requires another final review. Do not include credentials or unrelated data.
 
-## OpenCode
+## OpenCode 1
 
 The adapter targets the OpenCode 1.x permission/bash/task contract. Each review
 uses a new runtime Git root outside the target repository, separate HOME,
@@ -78,6 +78,29 @@ Rechecks resume the same directly selected reviewer session ID. A changed
 canonical profile/provider identity or conflicting explicit model blocks session
 reuse. Legacy sessions without model binding require a new review. Retain runtime
 folders until final PASS; cleanup is always address-specific.
+
+## OpenCode 2
+
+OpenCode V2 uses a separate caller and adapter path. Its `/lean-review` command
+gets the invocation's exact `sessionID`, reads that session's selected
+`providerID/modelID` through the V2 session/provider/model APIs, and launches the
+generic `lean-review` CLI with only the bound adapter, exact model, and
+allowlisted provider/model metadata. It does not use the V1 shell hook,
+latest-session lookup, default-model fallback, or a shared mutable binding.
+Install the complete `assets/platforms/opencode-v2/` directory as one local
+plugin directory so its pinned V2 plugin SDK and adjacent binding module resolve.
+The caller launch uses the V2 host executable (`process.execPath`), not a PATH
+lookup that could select a separate V1 installation.
+
+The isolated V2 runtime uses V2 `providers`, `agents`, and permission rules, plus
+the V2-native bounded review-tool plugin. Its dependency lock is installed into
+the private runtime with package lifecycle scripts disabled. It excludes V1 `debug config --pure`
+and `run --pure`, user/project configuration, provider headers and credentials,
+external skills, unrelated plugins, and MCP. Current account authentication is
+linked through the existing OpenCode auth store. Metadata with an unknown
+provider package, malformed session identity, unsafe endpoint, extra credential
+fields, or ambiguous model match fails closed. OpenCode 1 retains its existing
+adapter and plugin contract.
 
 ## Codex
 
