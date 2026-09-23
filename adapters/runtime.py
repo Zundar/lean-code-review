@@ -110,10 +110,13 @@ def opencode_v2_environment(runtime: Path, repo: Path, depth: str, model: str, e
     return env
 
 
-def opencode_major_version() -> int:
-    executable = os.environ.get('LEAN_REVIEW_OPENCODE_CLI') or shutil.which('opencode')
-    if not executable or (os.environ.get('LEAN_REVIEW_OPENCODE_CLI') and not Path(executable).is_absolute()):
-        raise Blocked('OpenCode executable is unavailable')
+def opencode_major_version(executable: str | None = None, expected: str | None = None) -> int:
+    executable = executable or os.environ.get('LEAN_REVIEW_OPENCODE_CLI')
+    expected = expected or os.environ.get('LEAN_REVIEW_OPENCODE_VERSION')
+    if not executable or not Path(executable).is_absolute():
+        raise Blocked('OpenCode caller did not provide its executable identity')
+    if not expected:
+        raise Blocked('OpenCode caller did not provide its host version')
     try:
         result = subprocess.run([executable, '--version'], capture_output=True, text=True,
                                 timeout=10, check=True)
@@ -123,20 +126,23 @@ def opencode_major_version() -> int:
     match = re.search(r'\b(?:opencode\s+)?v?(\d+)\.', version, re.IGNORECASE)
     if not match:
         raise Blocked('OpenCode version is not identifiable')
-    expected = os.environ.get('LEAN_REVIEW_OPENCODE_VERSION')
-    if expected and expected not in (version, version.removeprefix('opencode '),
-                                     version.removeprefix('opencode v')):
-        raise Blocked('OpenCode executable version differs from the current V2 host')
-    return int(match[1])
+    if expected not in (version, version.removeprefix('opencode '),
+                        version.removeprefix('opencode v')):
+        raise Blocked('OpenCode executable version differs from the bound caller host')
+    major = int(match[1])
+    if major not in (1, 2):
+        raise Blocked('OpenCode host version is unsupported')
+    return major
 
 
-def opencode_v2_executable() -> str:
-    executable = os.environ.get('LEAN_REVIEW_OPENCODE_CLI')
+def opencode_v2_executable(executable: str | None = None, version: str | None = None) -> str:
+    executable = executable or os.environ.get('LEAN_REVIEW_OPENCODE_CLI')
+    version = version or os.environ.get('LEAN_REVIEW_OPENCODE_VERSION')
     if not executable or not Path(executable).is_absolute():
         raise Blocked('OpenCode V2 caller did not provide its executable identity')
-    if not os.environ.get('LEAN_REVIEW_OPENCODE_VERSION'):
+    if not version:
         raise Blocked('OpenCode V2 caller did not provide its host version')
-    if opencode_major_version() < 2:
+    if opencode_major_version(executable, version) < 2:
         raise Blocked('OpenCode V2 caller executable is not V2')
     return executable
 
@@ -164,7 +170,8 @@ def codex_command(root: Path, runtime: Path, depth: str, selection: dict, sessio
     return argv
 
 
-def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = None) -> None:
+def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = None,
+                     executable: str = 'opencode') -> None:
     config = runtime / 'config/opencode'
     for sub in ('agents', 'tools'):
         (config / sub).mkdir(mode=0o700)
@@ -181,7 +188,7 @@ def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = 
             source_env.update(OPENCODE_DISABLE_EXTERNAL_SKILLS='1',
                               OPENCODE_DISABLE_PROJECT_CONFIG='1',
                               OPENCODE_DISABLE_MODELS_FETCH='1')
-            result = subprocess.run(['opencode', 'debug', 'config', '--pure'], cwd=root,
+            result = subprocess.run([executable, 'debug', 'config', '--pure'], cwd=root,
                                     env=source_env, capture_output=True, text=True, timeout=180, check=True)
             try:
                 resolved = json.loads(result.stdout)
@@ -470,6 +477,8 @@ def review(args) -> dict:
     home = Path.home()
     previous = None
     opencode_major = None
+    opencode_cli = None
+    opencode_version = None
     opencode_metadata = None
     if args.resume:
         cache = (home / '.cache/lean-code-review').resolve()
@@ -508,6 +517,15 @@ def review(args) -> dict:
         if selection['reasoning_effort'] != previous['reasoning_effort']:
             raise Blocked('saved reasoning effort differs from canonical reviewer contract')
         opencode_major = previous.get('opencode_major')
+        if saved_runtime_adapter == 'opencode':
+            opencode_cli = previous.get('opencode_cli')
+            opencode_version = previous.get('opencode_version')
+            if not isinstance(opencode_cli, str) or not Path(opencode_cli).is_absolute():
+                raise Blocked('saved OpenCode executable identity is incomplete; start a new review')
+            if not isinstance(opencode_version, str) or not opencode_version:
+                raise Blocked('saved OpenCode host version is incomplete; start a new review')
+            if opencode_major_version(opencode_cli, opencode_version) != opencode_major:
+                raise Blocked('saved OpenCode executable version changed; start a new review')
         if opencode_major == 2:
             try:
                 opencode_metadata = safe_metadata(previous.get('opencode_v2_metadata'), previous['model'])
@@ -518,10 +536,12 @@ def review(args) -> dict:
         runtime_adapter, current_model = caller_context()
         selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
     runtime_adapter = selection['runtime_adapter']
-    if not shutil.which(runtime_adapter):
+    if runtime_adapter != 'opencode' and not shutil.which(runtime_adapter):
         raise Blocked('current runtime CLI is unavailable')
     if runtime_adapter == 'opencode' and not previous:
-        opencode_major = opencode_major_version()
+        opencode_cli = os.environ.get('LEAN_REVIEW_OPENCODE_CLI')
+        opencode_version = os.environ.get('LEAN_REVIEW_OPENCODE_VERSION')
+        opencode_major = opencode_major_version(opencode_cli, opencode_version)
         if opencode_major >= 2:
             metadata = os.environ.get('LEAN_REVIEW_OPENCODE_V2_METADATA')
             try:
@@ -579,14 +599,15 @@ def review(args) -> dict:
                     ROOT, runtime, args.depth, selection['model'], opencode_metadata, env)
             check_opencode_v2(ROOT, runtime, env, args.depth, selection['model'], opencode_metadata)
             effort = selection['reasoning_effort']
-            argv = [opencode_v2_executable(), 'run', '--standalone', '--agent',
+            argv = [opencode_v2_executable(opencode_cli, opencode_version), 'run', '--standalone', '--agent',
                     f'spec-reviewer-{args.depth}', '--format', 'json']
             argv += ['--model', f'{selection["model"]}#{effort}']
         else:
             if not previous:
-                opencode_prepare(ROOT, runtime, args.depth, selection['model'])
+                opencode_prepare(ROOT, runtime, args.depth, selection['model'], opencode_cli)
             check(ROOT, runtime, env, depth=args.depth, model=selection['model'])
-            argv = ['opencode', 'run', '--pure', '--agent', f'spec-reviewer-{args.depth}', '--format', 'json']
+            argv = [opencode_cli, 'run', '--pure', '--agent',
+                    f'spec-reviewer-{args.depth}', '--format', 'json']
             argv += ['--model', selection['model']]
         if session:
             argv += ['--session', session]
@@ -633,8 +654,11 @@ def review(args) -> dict:
         raise Blocked(f'reviewer returned no valid final verdict; inspect {runtime}')
     state = {**selection, 'depth': args.depth, 'repo': str(repo), 'session': session,
              'skill_identity': identity, 'observed': observed}
-    if opencode_major is not None and opencode_major >= 2:
-        state.update(opencode_major=opencode_major, opencode_v2_metadata=opencode_metadata)
+    if opencode_major is not None:
+        state.update(opencode_major=opencode_major, opencode_cli=opencode_cli,
+                     opencode_version=opencode_version)
+        if opencode_major >= 2:
+            state['opencode_v2_metadata'] = opencode_metadata
     (runtime / 'session.json').write_text(json.dumps(state))
     usage = session_usage(runtime, runtime_adapter)
     return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,

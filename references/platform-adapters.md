@@ -48,8 +48,14 @@ uses a new runtime Git root outside the target repository, separate HOME,
 XDG config/cache/state, and external skill scans disabled. Only the existing authentication file is linked into the isolated XDG data store. Inherited OpenCode config overrides are
 removed. The target repository's `.opencode` files never load.
 
-The parent integration supplies the current runtime adapter and effective
-`provider/model` through the launch context. The launcher preserves that exact
+The parent integration supplies the current runtime adapter, effective
+`provider/model`, and absolute `LEAN_REVIEW_OPENCODE_CLI` plus matching
+`LEAN_REVIEW_OPENCODE_VERSION` through the launch context. The launcher uses
+that caller-bound executable for version preflight and launch; it never resolves
+`opencode` through `PATH`, which can select a different major version in a dual
+install. Include `assets/platforms/opencode/binding.ts` as a V1 plugin alongside
+the existing `shell.env` binding; it contributes the V1 host executable and
+version while preserving the caller's existing session/model binding. The launcher preserves that exact
 model unless an explicit full `provider/model` override is supplied; both remain
 inside the OpenCode adapter. The same selected identifier and canonical effort
 are reapplied on resume, without rereading caller context. Provider credentials
@@ -89,8 +95,8 @@ allowlisted provider/model metadata. It does not use the V1 shell hook,
 latest-session lookup, default-model fallback, or a shared mutable binding.
 Install the complete `assets/platforms/opencode-v2/` directory as one local
 plugin directory so its pinned V2 plugin SDK and adjacent binding module resolve.
-The caller launch uses the V2 host executable (`process.execPath`), not a PATH
-lookup that could select a separate V1 installation.
+The caller binds the V2 host executable (`process.execPath`) and host version,
+not a PATH lookup that could select a separate V1 installation.
 
 The isolated V2 runtime uses V2 `providers`, `agents`, and permission rules, plus
 the V2-native bounded review-tool plugin. Its dependency lock is installed into

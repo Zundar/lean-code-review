@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -145,5 +146,20 @@ def test_v2_version_is_bound_to_the_host_executable(tmp_path, monkeypatch):
 
     assert launch.opencode_major_version() == 2
     monkeypatch.setenv('LEAN_REVIEW_OPENCODE_VERSION', '2.0.15')
-    with pytest.raises(launch.Blocked, match='differs from the current V2 host'):
+    with pytest.raises(launch.Blocked, match='differs from the bound caller host'):
         launch.opencode_major_version()
+
+
+def test_dual_install_uses_caller_bound_v1_cli_not_default_v2(tmp_path, monkeypatch):
+    default_v2 = tmp_path / 'opencode'
+    default_v2.write_text('#!/bin/sh\nprintf "opencode v2.0.14\\n"\n')
+    default_v2.chmod(0o700)
+    explicit_v1 = tmp_path / 'opencode-v1'
+    explicit_v1.write_text('#!/bin/sh\nprintf "opencode v1.18.32\\n"\n')
+    explicit_v1.chmod(0o700)
+    monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
+    monkeypatch.setenv('LEAN_REVIEW_OPENCODE_CLI', str(explicit_v1))
+    monkeypatch.setenv('LEAN_REVIEW_OPENCODE_VERSION', '1.18.32')
+
+    assert launch.shutil.which('opencode') == str(default_v2)
+    assert launch.opencode_major_version() == 1
