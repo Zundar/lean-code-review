@@ -662,12 +662,17 @@ def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypat
     artifact.write_text('exact reviewed bytes')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(launch.shutil, 'which', lambda b: f'/mock/{b}')
+    v1_cli = tmp_path / 'opencode-v1'
+    v1_cli.write_text('#!/bin/sh\nprintf "opencode v1.18.32\\n"\n')
+    v1_cli.chmod(0o700)
+    monkeypatch.setenv('LEAN_REVIEW_OPENCODE_CLI', str(v1_cli))
+    monkeypatch.setenv('LEAN_REVIEW_OPENCODE_VERSION', '1.18.32')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
     monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/model-a')
     original_run = subprocess.run
 
     def source_config(argv, *args, **kwargs):
-        if argv[:3] == ['opencode', 'debug', 'config']:
+        if argv[:3] == [str(v1_cli), 'debug', 'config']:
             return SimpleNamespace(stdout=json.dumps({'provider': {
                 'vendor': {'npm': '@ai-sdk/openai-compatible',
                            'options': {'baseURL': 'https://provider.example/v1'},
@@ -681,6 +686,7 @@ def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypat
     calls = []
 
     def run(argv, runtime, env, prompt, stem):
+        assert argv[0] == str(v1_cli)
         assert argv[argv.index('--model') + 1] == 'vendor/model-a'
         assert argv[argv.index('--agent') + 1] == 'spec-reviewer-strict'
         assert '--pure' in argv and env['HOME'] == str(runtime / 'home')
