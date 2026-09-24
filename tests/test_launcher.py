@@ -109,10 +109,8 @@ def test_codex_model_selection_is_local_and_read_only():
     selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'caller-model', 'explicit-model')
     assert selection['model'] == 'explicit-model'
     assert launch.resolve_runtime(ROOT, 'strict', 'codex', 'gpt-5.6-astra')['model'] == 'gpt-5.6-astra'
-    model_free = launch.resolve_runtime(ROOT, 'strict', 'codex', None)
-    assert model_free['model'] is None
-    assert not any(arg.startswith('model=') for arg in
-                   launch.codex_command(ROOT, ROOT, 'strict', model_free, None))
+    with pytest.raises(launch.Blocked, match='current runtime/model'):
+        launch.resolve_runtime(ROOT, 'strict', 'codex', None)
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
         command = launch.codex_command(ROOT, ROOT, 'strict', selection, session)

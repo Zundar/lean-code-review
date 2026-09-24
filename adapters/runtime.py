@@ -59,10 +59,9 @@ def resolve_runtime(root: Path, depth: str, runtime_adapter: str,
         raise Blocked('current runtime adapter context is required')
     if model is None:
         model = current_model
-    if model is None and runtime_adapter != 'codex':
+    if model is None:
         raise Blocked('current runtime/model context is required')
-    if model is not None:
-        model = model_name(model, runtime_adapter)
+    model = model_name(model, runtime_adapter)
     if runtime_adapter == 'codex':
         data = codex_profile(root, depth)
         effort = data['model_reasoning_effort']
@@ -551,10 +550,8 @@ def review(args) -> dict:
     else:
         runtime_adapter, current_model = caller_context()
         if runtime_adapter == 'codex' and args.model is None:
-            selection = resolve_runtime(ROOT, args.depth, runtime_adapter, None)
-            selection['model'] = codex_parent_model()
-        else:
-            selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
+            current_model = codex_parent_model()
+        selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
     runtime_adapter = selection['runtime_adapter']
     if runtime_adapter != 'opencode' and not shutil.which(runtime_adapter):
         raise Blocked('current runtime CLI is unavailable')
