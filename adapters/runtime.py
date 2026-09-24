@@ -374,8 +374,7 @@ def reported_value(values: list) -> str | None:
     return values[0] if len(set(values)) == 1 else None
 
 
-def codex_session_file(runtime: Path, session_id: str) -> Path:
-    sessions = runtime / 'codex/sessions'
+def codex_session_file(sessions: Path, session_id: str) -> Path:
     matches = []
     if not sessions.exists():
         raise Blocked('Codex did not persist one matching session')
@@ -393,6 +392,23 @@ def codex_session_file(runtime: Path, session_id: str) -> Path:
     return matches[0]
 
 
+def codex_parent_model() -> str:
+    thread_id = os.environ.get('CODEX_THREAD_ID')
+    if not isinstance(thread_id, str) or not thread_id:
+        raise Blocked('current Codex parent thread identity is required')
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+    path = codex_session_file(home / 'sessions', thread_id)
+    latest = None
+    with path.open() as stream:
+        for line in stream:
+            event = json.loads(line)
+            if event.get('type') == 'turn_context':
+                latest = event.get('payload')
+    if not isinstance(latest, dict):
+        raise Blocked('Codex parent session has no current turn context')
+    return model_name(latest.get('model'), 'codex')
+
+
 def codex_result(events: list[dict], runtime: Path,
                  session_snapshot: tuple[Path, int] | None = None) -> tuple[str, str, dict]:
     threads = [e.get('thread_id') for e in events if e.get('type') == 'thread.started']
@@ -403,7 +419,7 @@ def codex_result(events: list[dict], runtime: Path,
             or any(e.get('type') in ('error', 'turn.failed') for e in events)):
         raise Blocked('Codex returned no completed reviewer turn')
     thread_id = threads[0]
-    path = codex_session_file(runtime, thread_id)
+    path = codex_session_file(runtime / 'codex/sessions', thread_id)
     start = 0
     if session_snapshot is not None:
         previous_path, start = session_snapshot
@@ -534,7 +550,11 @@ def review(args) -> dict:
         runtime = args.resume.resolve(strict=True)
     else:
         runtime_adapter, current_model = caller_context()
-        selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
+        if runtime_adapter == 'codex' and args.model is None:
+            selection = resolve_runtime(ROOT, args.depth, runtime_adapter, None)
+            selection['model'] = codex_parent_model()
+        else:
+            selection = resolve_runtime(ROOT, args.depth, runtime_adapter, current_model, args.model)
     runtime_adapter = selection['runtime_adapter']
     if runtime_adapter != 'opencode' and not shutil.which(runtime_adapter):
         raise Blocked('current runtime CLI is unavailable')
@@ -582,7 +602,7 @@ def review(args) -> dict:
         argv = codex_command(ROOT, runtime, args.depth, selection, session)
         session_snapshot = None
         if session:
-            path = codex_session_file(runtime, session)
+            path = codex_session_file(runtime / 'codex/sessions', session)
             session_snapshot = (path, path.stat().st_size)
         events = run_process(argv, runtime, env, packet, stem)
         verdict, session, observed = codex_result(events, runtime, session_snapshot)
