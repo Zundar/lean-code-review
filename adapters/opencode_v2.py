@@ -18,6 +18,8 @@ _PROVIDER_PACKAGES = {
 _TOP_LEVEL = {'provider', 'model'}
 _MODEL_FIELDS = {'id', 'modelID', 'providerID', 'name', 'capabilities', 'limit', 'variants'}
 _LIMIT_FIELDS = {'context', 'input', 'output'}
+_VARIANT_SETTINGS = {'reasoningEffort', 'reasoning', 'reasoningSummary', 'include'}
+_REASONING_INCLUDE = ['reasoning.encrypted_content']
 
 
 def _identifier(value: object) -> bool:
@@ -125,9 +127,15 @@ def safe_metadata(raw: str | dict, current_model: str) -> dict:
                     or not _identifier(variant.get('id'))):
                 raise V2MetadataError('OpenCode V2 model variant is malformed')
             variant_settings = variant.get('settings', {})
-            if not isinstance(variant_settings, dict) or set(variant_settings) - {'reasoningEffort', 'reasoning'}:
+            if not isinstance(variant_settings, dict) or set(variant_settings) - _VARIANT_SETTINGS:
                 raise V2MetadataError('OpenCode V2 model variant settings are unsafe')
             if 'reasoningEffort' in variant_settings and not _identifier(variant_settings['reasoningEffort']):
+                raise V2MetadataError('OpenCode V2 model reasoning metadata is malformed')
+            summary = variant_settings.get('reasoningSummary')
+            if ('reasoningSummary' in variant_settings
+                    and (not isinstance(summary, str) or summary != 'auto')):
+                raise V2MetadataError('OpenCode V2 model reasoning metadata is malformed')
+            if 'include' in variant_settings and variant_settings['include'] != _REASONING_INCLUDE:
                 raise V2MetadataError('OpenCode V2 model reasoning metadata is malformed')
             reasoning = variant_settings.get('reasoning')
             if reasoning is not None and (not isinstance(reasoning, dict)

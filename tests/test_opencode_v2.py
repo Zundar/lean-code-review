@@ -61,6 +61,28 @@ def test_v2_metadata_matches_session_and_emits_native_provider_config():
     }
 
 
+def test_v2_metadata_accepts_bounded_openai_variant_settings():
+    value = packet('openai', 'gpt-6-luna')
+    value['provider']['package'] = '@opencode/ai/providers/openai'
+    value['provider']['settings'] = {
+        'baseURL': 'https://provider.example/v1', 'transport': 'websocket',
+    }
+    value['model']['variants'] = [
+        {'id': 'low', 'settings': {
+            'reasoningEffort': 'low', 'reasoningSummary': 'auto',
+            'include': ['reasoning.encrypted_content'],
+        }},
+        {'id': 'high', 'settings': {'reasoningEffort': 'high'}},
+    ]
+
+    safe = safe_metadata(value, 'openai/gpt-6-luna')
+
+    assert safe['model']['variants'] == value['model']['variants']
+    assert v2_provider_config(safe)['providers']['openai']['models']['gpt-6-luna']['variants'] == value[
+        'model'
+    ]['variants']
+
+
 @pytest.mark.parametrize('mutate', [
     lambda data: data.update(extra='ambiguous'),
     lambda data: data['provider'].update(package='unknown-provider'),
@@ -70,6 +92,11 @@ def test_v2_metadata_matches_session_and_emits_native_provider_config():
     lambda data: data['model'].update(headers={'x-api-key': 'secret'}),
     lambda data: data['model']['limit'].update(context=float('inf')),
     lambda data: data['model']['variants'][0].update(settings={'apiKey': 'secret'}),
+    lambda data: data['model']['variants'][0].update(settings={'headers': {'authorization': 'secret'}}),
+    lambda data: data['model']['variants'][0].update(settings={'reasoningSummary': 'concise'}),
+    lambda data: data['model']['variants'][0].update(settings={'include': ['reasoning.encrypted_content', 'other']}),
+    lambda data: data['model']['variants'][0].update(settings={'include': ['other']}),
+    lambda data: data['model']['variants'][0].update(settings={'textVerbosity': 'low'}),
     lambda data: data['provider'].update(package=[]),
 ])
 def test_v2_metadata_rejects_ambiguous_or_unsafe_fields(mutate):
