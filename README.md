@@ -79,16 +79,17 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 The parent integration binds the current executor context before invoking a new
 review. The launcher does not expose that runtime adapter/model binding as a
 user selector, and does not inspect installed executables, process state,
-previous sessions, transcripts or mutable defaults to infer it. `--model` stays
+unrelated sessions, transcripts or mutable defaults to infer it. `--model` stays
 inside the bound runtime adapter and overrides the caller's current model; when
 omitted, the bound current model is used. No fallback or adapter iteration
 occurs.
 
 For Codex callers, use `lean-review-codex`; it binds `runtime_adapter=codex` and
-delegates to `lean-review`. New reviews use the caller-bound current model or an
-explicit `--model` when provided. With neither, Codex starts without a model
-override and the reviewer binds the effective model observed in that turn's
-persisted context.
+delegates to `lean-review`. Without an explicit `--model`, it binds the parent
+model from `CODEX_THREAD_ID` and the one matching rollout in the current
+`CODEX_HOME` (or `~/.codex`). Missing or duplicate parent rollouts block before
+the child model call. The child is started with that exact model and its
+observed model must match. Resume keeps the saved reviewer model and session.
 
 OpenCode uses the caller-bound full `provider/model` unless an explicit full
 `provider/model` is provided; Codex uses medium/high effort by depth. Claude

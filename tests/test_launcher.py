@@ -109,10 +109,8 @@ def test_codex_model_selection_is_local_and_read_only():
     selection = launch.resolve_runtime(ROOT, 'strict', 'codex', 'caller-model', 'explicit-model')
     assert selection['model'] == 'explicit-model'
     assert launch.resolve_runtime(ROOT, 'strict', 'codex', 'gpt-5.6-astra')['model'] == 'gpt-5.6-astra'
-    model_free = launch.resolve_runtime(ROOT, 'strict', 'codex', None)
-    assert model_free['model'] is None
-    assert not any(arg.startswith('model=') for arg in
-                   launch.codex_command(ROOT, ROOT, 'strict', model_free, None))
+    with pytest.raises(launch.Blocked, match='current runtime/model'):
+        launch.resolve_runtime(ROOT, 'strict', 'codex', None)
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
         command = launch.codex_command(ROOT, ROOT, 'strict', selection, session)
@@ -352,6 +350,13 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
     monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'caller-model')
+    parent_sessions = tmp_path / '.codex/sessions'
+    parent_sessions.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_THREAD_ID', 'parent-thread')
+    (parent_sessions / 'parent.jsonl').write_text(
+        json.dumps({'type': 'session_meta', 'payload': {'id': 'parent-thread'}}) + '\n'
+        + json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'caller-model', 'effort': 'medium'}}) + '\n')
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
               {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
 
@@ -498,8 +503,13 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
     monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/codex')
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'codex')
     monkeypatch.delenv('LEAN_REVIEW_CURRENT_MODEL', raising=False)
-    observed_model = [None]
-    requested_model = [None]
+    parent_sessions = tmp_path / '.codex/sessions'
+    parent_sessions.mkdir(parents=True)
+    monkeypatch.delenv('CODEX_HOME', raising=False)
+    thread_id = 'current-parent-thread'
+    monkeypatch.setenv('CODEX_THREAD_ID', thread_id)
+    observed_model = ['model-a']
+    requested_model = ['model-a']
     calls = []
     args = SimpleNamespace(repo=repo, artifact=artifact,
                            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
@@ -508,8 +518,7 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
 
     def run(argv, runtime, env, prompt, stem):
         model_options = [arg for arg in argv if arg.startswith('model=')]
-        assert model_options == ([] if requested_model[0] is None
-                                 else [f'model={json.dumps(requested_model[0])}'])
+        assert model_options == [f'model={json.dumps(requested_model[0])}']
         calls.append(argv)
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
@@ -529,34 +538,60 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
         return events
 
     monkeypatch.setattr(launch, 'run_process', run)
-    with pytest.raises(launch.Blocked, match='one effective model'):
+    monkeypatch.delenv('CODEX_THREAD_ID')
+    with pytest.raises(launch.Blocked, match='parent thread identity'):
         launch.review(args)
 
-    observed_model[0] = 'observed-model'
+    monkeypatch.setenv('CODEX_THREAD_ID', thread_id)
+    with pytest.raises(launch.Blocked, match='one matching session'):
+        launch.review(args)
+    for name in ('one.jsonl', 'two.jsonl'):
+        (parent_sessions / name).write_text(
+            json.dumps({'type': 'session_meta', 'payload': {'id': thread_id}}) + '\n'
+            + json.dumps({'type': 'turn_context', 'payload': {'model': 'model-a', 'effort': 'high'}}) + '\n')
+    with pytest.raises(launch.Blocked, match='one matching session'):
+        launch.review(args)
+    (parent_sessions / 'two.jsonl').unlink()
+
+    # A later unrelated rollout cannot override the current thread's exact binding.
+    (parent_sessions / 'other.jsonl').write_text(
+        json.dumps({'type': 'session_meta', 'payload': {'id': 'other-thread'}}) + '\n'
+        + json.dumps({'type': 'turn_context', 'payload': {'model': 'model-z'}}) + '\n')
+    parent_file = parent_sessions / 'one.jsonl'
+    parent_file.write_text(
+        json.dumps({'type': 'session_meta', 'payload': {'id': thread_id}}) + '\n'
+        + json.dumps({'type': 'turn_context', 'payload': {'model': 'old-model', 'effort': 'low'}}) + '\n'
+        + json.dumps({'type': 'turn_context', 'payload': {'model': 'model-a', 'effort': 'high'}}) + '\n')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'stale-caller-model')
+    with pytest.raises(launch.Blocked, match='differs from requested model'):
+        observed_model[0] = 'model-b'
+        launch.review(args)
+    observed_model[0] = 'model-a'
     result = launch.review(args)
-    assert result['model'] == 'observed-model'
+    assert result['model'] == 'model-a' and result['observed']['model'] == 'model-a'
+
+    # Resume keeps the saved model even when the exact parent rollout later changes.
+    parent_file.write_text(
+        json.dumps({'type': 'session_meta', 'payload': {'id': thread_id}}) + '\n'
+        + json.dumps({'type': 'turn_context', 'payload': {'model': 'model-b', 'effort': 'high'}}) + '\n')
     args.resume = Path(result['runtime'])
-    requested_model[0] = 'observed-model'
-    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'changed-caller-model')
     resumed = launch.review(args)
-    assert resumed['model'] == 'observed-model' and resumed['session'] == result['session']
+    assert resumed['model'] == 'model-a' and resumed['session'] == result['session']
     assert calls[0].count('resume') == calls[1].count('resume') == 0
     assert calls[2][calls[2].index('resume') + 1] == 'session'
-    assert 'model="observed-model"' in calls[2]
+    assert 'model="model-a"' in calls[2]
 
-    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'current-model')
-    requested_model[0] = 'current-model'
+    # Explicit override wins and remains fail-closed on an observed mismatch.
     args.resume = None
+    monkeypatch.delenv('CODEX_THREAD_ID')
+    args.model = 'model-b'
+    requested_model[0] = 'model-b'
+    observed_model[0] = 'model-a'
     with pytest.raises(launch.Blocked, match='differs from requested model'):
         launch.review(args)
-
-    args.model = 'explicit-model'
-    requested_model[0] = 'explicit-model'
-    with pytest.raises(launch.Blocked, match='differs from requested model'):
-        launch.review(args)
-    observed_model[0] = 'explicit-model'
+    observed_model[0] = 'model-b'
     result = launch.review(args)
-    assert result['model'] == 'explicit-model'
+    assert result['model'] == 'model-b'
 
 
 def test_codex_result_uses_exact_matching_session(tmp_path):
