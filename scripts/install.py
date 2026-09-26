@@ -49,14 +49,21 @@ def check_parents(path: Path, home: Path) -> None:
 
 def install(root: Path, home: Path, platforms: list[str]) -> None:
     planned = links(root, home, platforms)
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    legacy_plugin = home / '.cache/lean-code-review/opencode-v2/index.ts'
+    migrations = set()
     for path, target in planned.items():
         check_parents(path, home)
         if not target.exists():
             raise ValueError(f'missing canonical source: {target}')
-        if collision(path, target):
+        if path == plugin and path.is_symlink() and os.readlink(path) == str(legacy_plugin):
+            migrations.add(path)
+        elif collision(path, target):
             raise ValueError(f'foreign path collision: {path}')
     for path, target in planned.items():
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path in migrations:
+            path.unlink()
         if not owned(path, target):
             path.symlink_to(target, target_is_directory=target.is_dir())
 

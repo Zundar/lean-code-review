@@ -57,6 +57,31 @@ def test_opencode_reviewer_agent_links_are_removed_on_uninstall(tmp_path):
     assert not plugin.is_symlink()
 
 
+@pytest.mark.parametrize('foreign', ['symlink', 'file'])
+def test_opencode_v2_plugin_migrates_only_known_cache_link(tmp_path, foreign):
+    home = tmp_path / 'home'
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    plugin.parent.mkdir(parents=True)
+    legacy = home / '.cache/lean-code-review/opencode-v2/index.ts'
+    plugin.symlink_to(legacy)
+
+    install.install(ROOT, home, ['opencode'])
+
+    canonical = ROOT / 'assets/platforms/opencode-v2/index.ts'
+    assert plugin.is_symlink() and plugin.resolve() == canonical
+
+    plugin.unlink()
+    if foreign == 'symlink':
+        plugin.symlink_to(tmp_path / 'foreign.ts')
+        original = plugin.readlink()
+    else:
+        plugin.write_text('foreign')
+        original = plugin.read_text()
+    with pytest.raises(ValueError, match='foreign path collision'):
+        install.install(ROOT, home, ['opencode'])
+    assert (plugin.readlink() if foreign == 'symlink' else plugin.read_text()) == original
+
+
 def test_codex_caller_binds_adapter_and_delegates(tmp_path):
     import os
     import subprocess
