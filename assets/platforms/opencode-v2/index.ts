@@ -13,6 +13,7 @@ function redact(value: string): string {
     .replace(/(--(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|authorization)(?:=|\s+))\S+/giu, "$1[REDACTED]")
     .replace(/\b(authorization)\s*:\s*(?:bearer|basic)\s+\S+/giu, "$1: [REDACTED]")
     .replace(/(invalid choice:\s+)["'][^\r\n]*?["'](\s+\(choose from\s+[^)\r\n]*\))/giu, "$1[REDACTED]$2")
+    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)\s*[:=]\s*(["'])[^"'\r\n]*\2/giu, "$1=[REDACTED]")
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)\s*[:=]\s*([^\s,'"}\]]+)/giu, "$1=[REDACTED]")
     .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/giu, "https://[REDACTED]@")
     .replace(/([?&](?:key|token|secret|password|authorization)=)[^&\s]+/giu, "$1[REDACTED]")
@@ -206,7 +207,16 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
   const model = { providerID: binding.providerID, id: binding.modelID,
     ...(binding.variant ? { variant: binding.variant } : {}) }
   const env = reviewEnvironment(binding, process.env)
-  const prepared = JSON.parse(await runReview(["v2-prepare", ...args], env, ctx.location.directory, "", true))
+  const output = await runReview(["v2-prepare", ...args], env, ctx.location.directory, "", true)
+  let prepared
+  try {
+    prepared = JSON.parse(output)
+  } catch {
+    throw new Error(`lean-review OpenCode V2: preparation failed: ${redact(output)}`)
+  }
+  if (prepared?.verdict === "BLOCKED") {
+    throw new Error(`lean-review OpenCode V2: ${redact(String(prepared.reason ?? "preparation blocked"))}`)
+  }
   if (prepared.model !== binding.model || !prepared.runtime || !prepared.repo) {
     throw new Error("lean-review OpenCode V2: frozen packet does not match the caller")
   }

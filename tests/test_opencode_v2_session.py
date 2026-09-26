@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('failure', ['none', 'catalog', 'mcp', 'scoped-allow', 'model-drift',
-                                     'hostile-ambient', 'bad-profile', 'missing-system'])
+                                     'hostile-ambient', 'bad-profile', 'missing-system',
+                                     'prepare-blocked', 'prepare-usage'])
 def test_v2_session_binding_and_effective_catalog(tmp_path: Path, failure: str) -> None:
     node = shutil.which('node')
     if not node:
@@ -28,9 +29,18 @@ def test_v2_session_binding_and_effective_catalog(tmp_path: Path, failure: str) 
         'packet': 'immutable packet', 'agent_system': agent_system}))
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
+    (tmp_path / 'failure').write_text(failure)
     executable = bin_dir / 'lean-review'
     executable.write_text('''#!/bin/sh
 if [ "$1" = v2-prepare ]; then
+  if [ "$(cat "$HOME/failure")" = prepare-blocked ]; then
+    printf '%s' '{"verdict":"BLOCKED","reason":"artifact SHA-256 mismatch; apiKey: \\"private-value\\""}'
+    exit 1
+  fi
+  if [ "$(cat "$HOME/failure")" = prepare-usage ]; then
+    echo 'usage: lean-review: missing --artifact' >&2
+    exit 2
+  fi
   cat "$HOME/prepared.json"
 else
   cat >/dev/null
@@ -93,6 +103,11 @@ await LeanReviewV2.setup(ctx)
 await commands[0].execute({ sessionID: "ses_parent", prompt: { text: "--depth lite --repo /review/repo" } })
 assert.equal(toolLookups[1]("ses_reviewer"), undefined)
 assert.equal(outcome.verdict, ["none", "mcp", "hostile-ambient"].includes(process.argv[2]) ? "PASS" : "BLOCKED", outcome.reason)
+if (process.argv[2] === "prepare-blocked") assert.match(outcome.reason, /artifact SHA-256 mismatch/)
+assert.doesNotMatch(outcome.reason ?? "", /private-value/)
+if (process.argv[2] === "prepare-usage") assert.match(outcome.reason, /missing --artifact/)
+assert.doesNotMatch(outcome.reason ?? "", /JSON Parse error|Unexpected identifier/)
+if (process.argv[2].startsWith("prepare-")) { assert.equal(created, undefined); process.exit(0) }
 if (["scoped-allow", "bad-profile"].includes(process.argv[2])) { assert.equal(created, undefined); assert.equal(prompted, false) }
 else { assert.equal(created.agent, "spec-reviewer-lite"); assert.deepEqual(created.model, model) }
 if (["scoped-allow", "bad-profile"].includes(process.argv[2])) process.exit(0)
