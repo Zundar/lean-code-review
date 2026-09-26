@@ -167,6 +167,17 @@ const permissions = [
   { action: "*", resource: "*", effect: "deny" },
   ...allowed.map(action => ({ action, resource: "*", effect: "allow" })),
 ]
+// The context hook replaces every ambient system part, including project/global instructions.
+const reviewerCatalog = `# Code Mode
+Use the execute tool to call only the bounded tools listed below. They work only inside execute.
+The catalog is complete. Do not guess tool names.
+
+## Available tools
+
+- lean_review (3 tools) // Bounded read-only review tools
+  - tools.lean_review.read({path: string, offset?: number, limit?: number}): Promise<string | null>
+  - tools.lean_review.list({path: string}): Promise<string | null>
+  - tools.lean_review.grep({path: string, query: string, case_sensitive?: boolean}): Promise<string | null>`
 
 function sameModel(actual: any, expected: any): boolean {
   return actual?.providerID === expected.providerID && actual?.id === expected.id
@@ -186,7 +197,7 @@ function deniedExceptReviewer(rules: any[]): boolean {
 }
 
 async function reviewInService(ctx: any, sessionID: string, prompt: any,
-                               bindings: Map<string, { repo: string; model: any; agent: string; checked: boolean }>): Promise<string> {
+                               bindings: Map<string, { repo: string; model: any; agent: string; system: string; checked: boolean }>): Promise<string> {
   const binding = await bindSession(ctx, sessionID)
   const args = commandArguments(prompt)
   const depth = args[args.indexOf("--depth") + 1]
@@ -200,13 +211,14 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
     throw new Error("lean-review OpenCode V2: frozen packet does not match the caller")
   }
   const profile = unwrap(await ctx.agent.get({ agentID: agent }))
-  if (profile?.id !== agent || profile.mode !== "primary" || !deniedExceptReviewer(profile.permissions)) {
+  if (profile?.id !== agent || profile.mode !== "primary" || !deniedExceptReviewer(profile.permissions)
+      || !prepared.agent_system || profile.system !== prepared.agent_system) {
     throw new Error("lean-review OpenCode V2: dedicated reviewer agent is unavailable or unsafe")
   }
   const created = unwrap(await ctx.session.create({ title: `Lean Review ${depth}`, agent, model,
     location: { directory: ctx.location.directory }, permissions }))
   if (!created?.id || created.id === sessionID) throw new Error("lean-review OpenCode V2: reviewer session is not distinct")
-  bindings.set(created.id, { repo: prepared.repo, model, agent, checked: false })
+  bindings.set(created.id, { repo: prepared.repo, model, agent, system: prepared.agent_system, checked: false })
   try {
     const selected = unwrap(await ctx.session.get({ sessionID: created.id }))
     const catalog = unwrap(await ctx.tool.list())
@@ -249,11 +261,17 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
 export const LeanReviewV2 = Plugin.define({
   id: "lean-review.opencode-v2",
   async setup(ctx) {
-    const bindings = new Map<string, { repo: string; model: any; agent: string; checked: boolean }>()
+    const bindings = new Map<string, { repo: string; model: any; agent: string; system: string; checked: boolean }>()
     await registerReviewerTools(ctx, sessionID => bindings.get(sessionID)?.repo)
     await ctx.session.hook("context", event => {
       const review = bindings.get(event.sessionID)
       if (!review) return
+      if (!Array.isArray(event.system) || !event.system.some(part => part.type === "text" && part.text === review.system)) {
+        throw new Error("lean-review OpenCode V2: canonical reviewer instructions are missing")
+      }
+      // Do not forward ambient project/global instructions, references or platform worktree guidance.
+      event.system.splice(0, event.system.length, { type: "text", text: review.system },
+        { type: "text", text: reviewerCatalog })
       const catalog = event.system.map(part => part.text ?? "").join("\n")
       const tools = Object.keys(event.tools)
       const codeMode = catalog.split("## Available tools")[1]?.split("\n\n#")[0] ?? ""

@@ -369,6 +369,8 @@ def v2_prepare(args) -> dict:
     private_file(artifact, data)
     artifact.chmod(0o400)
     contract = profile(ROOT, args.depth).decode().split('---', 2)[2].strip()
+    agent_system = canonical(ROOT, f'assets/platforms/opencode-v2/agents/spec-reviewer-{args.depth}.md'
+                             ).decode().split('---', 2)[2].strip()
     packet = (f'REVIEWER CONTRACT:\n{contract}\nGOAL: {args.goal}\nMUST / MUST NOT:\n{args.requirements}\n'
               f'REVIEW INPUT:\nartifact:{artifact}\nsha256:{args.sha256}\n'
               f'base:{args.base}\ntarget:{args.target}\nTASK PATHS:\n{args.task_paths}\n'
@@ -382,7 +384,7 @@ def v2_prepare(args) -> dict:
              'target': args.target, 'skill_identity': skill_identity()}
     private_file(runtime / 'pending.json', json.dumps(state).encode())
     return {'runtime': str(runtime), 'packet': packet, 'model': model, 'repo': str(repo),
-            'artifact': str(artifact), 'sha256': args.sha256}
+            'artifact': str(artifact), 'sha256': args.sha256, 'agent_system': agent_system}
 
 
 def v2_finish(runtime: Path, outcome: dict) -> dict:

@@ -102,9 +102,11 @@ deny-all session permissions, except Code Mode `execute` and the bounded
 `lean_review_read/list/grep` actions. Its tool registry is shared by the
 service, but tool execution is restricted to the verified reviewer session and
 an immutable per-session repository binding. Agent/session/model/permissions
-are read back before prompting; a context hook checks the effective catalog
-contains only those three tools, no MCP instructions, and no other direct tool
-before the first model request. This is session/agent/tool isolation, not a
+and canonical V2 agent instructions are read back before prompting. A context
+hook replaces ambient system parts (project/global instructions and references)
+with the verified canonical agent instructions and bounded Code Mode catalog;
+it checks only those three tools, no MCP instructions, and no other direct tool
+before the first model request. This is session/agent/tool/instruction isolation, not a
 separate OS process. The launcher rechecks the artifact and canonical bytes
 when the reviewer finishes; unsupported resume bindings fail closed.
 
