@@ -1,7 +1,10 @@
 import copy
-import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
+import hashlib
+import subprocess
 
 import pytest
 
@@ -141,27 +144,33 @@ def test_two_session_metadata_has_no_cross_session_state():
     assert b.result()['model']['id'] == 'model-b'
 
 
-def test_v2_runtime_prepares_native_config_and_fails_closed_on_drift(tmp_path, monkeypatch):
-    runtime = tmp_path / 'runtime'
-    config = runtime / 'config/opencode'
-    config.mkdir(parents=True, mode=0o700)
-    safe = safe_metadata(packet(), 'current/model-a')
-    monkeypatch.setattr(launch, 'install_opencode_v2_plugin', lambda *_: None)
-
-    prepared = launch.opencode_v2_prepare(launch.ROOT, runtime, 'strict', 'current/model-a', safe, {})
-    env = {'OPENCODE_DISABLE_EXTERNAL_SKILLS': '1'}
-    launch.check_opencode_v2(launch.ROOT, runtime, env, 'strict', 'current/model-a', prepared)
-    data = json.loads((config / 'opencode.json').read_text())
-    assert data['model'] == 'current/model-a'
-    assert data['agents']['spec-reviewer-strict']['model'] == 'current/model-a#high'
-    assert data['plugins'] == ['./plugins/reviewer-tools']
-    assert 'apiKey' not in json.dumps(data)
-    assert 'Authorization' not in json.dumps(data)
-
-    data['agents']['spec-reviewer-strict']['permissions'] = []
-    (config / 'opencode.json').write_text(json.dumps(data))
-    with pytest.raises(launch.CheckError, match='isolation config mismatch'):
-        launch.check_opencode_v2(launch.ROOT, runtime, env, 'strict', 'current/model-a', prepared)
+def test_v2_parent_service_freezes_artifact_and_rechecks_it_on_finish(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('small immutable diff')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'openai/model-a')
+    args = SimpleNamespace(repo=repo, artifact=artifact, sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', model=None, resume=None, depth='strict',
+                           goal='review', requirements='preserve', task_paths='diff.patch', evidence='focused')
+    frozen = launch.v2_prepare(args)
+    assert Path(frozen['artifact']).read_bytes() == artifact.read_bytes()
+    assert f'sha256:{args.sha256}' in frozen['packet']
+    assert 'base:' + args.base in frozen['packet']
+    assert 'Target repository for nearby context: ' + str(repo) in frozen['packet']
+    with pytest.raises(launch.Blocked, match='valid final verdict'):
+        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'unknown'})
+    artifact.write_text('changed after reviewer request')
+    with pytest.raises(launch.Blocked, match='review bytes'):
+        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS'})
+    artifact.write_text('small immutable diff')
+    result = launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS',
+                                                       'variant': 'medium'})
+    assert result['session'] == 'ses-reviewer'
+    assert result['model'] == 'openai/model-a'
+    assert result['verdict'] == 'PASS'
 
 
 def test_v2_version_is_bound_to_the_host_executable(tmp_path, monkeypatch):

@@ -87,48 +87,28 @@ folders until final PASS; cleanup is always address-specific.
 
 ## OpenCode 2
 
-OpenCode V2 uses a separate caller and adapter path. Its `/lean-review` command
-gets the invocation's exact `sessionID`, reads that session's selected
-`providerID/modelID` through the V2 session/provider/model APIs, and launches the
-generic `lean-review` CLI with only the bound adapter, exact model, and
-allowlisted provider/model metadata. It does not use the V1 shell hook,
-latest-session lookup, default-model fallback, or a shared mutable binding.
-Install the complete `assets/platforms/opencode-v2/` directory as one local
-plugin directory so its pinned V2 plugin SDK and adjacent binding module resolve.
-The caller binds the V2 host executable (`process.execPath`) and host version,
-not a PATH lookup that could select a separate V1 installation.
+The `/lean-review` command reads its exact caller `sessionID` and selected
+provider/model/variant through the V2 APIs. The generic launcher freezes the
+artifact, digest, base, target, and repository before the command creates a
+distinct `spec-reviewer-*` session in the same service. Only that service
+resolves its provider-owned connection; no credential values or SQLite file
+move between processes. Install the V2 agent Markdown files with
+`lean-review install --platform opencode` and load the complete
+`assets/platforms/opencode-v2/` command plugin directory, including its bounded
+tools. The V1 caller and Codex execution paths remain separate.
 
-The isolated V2 runtime uses V2 `providers`, `agents`, and permission rules, plus
-the V2-native bounded review-tool plugin. Its dependency lock is installed into
-the private runtime with package lifecycle scripts disabled. It excludes V1 `debug config --pure`
-and `run --pure`, user/project configuration, provider headers and credentials,
-external skills, unrelated plugins, and MCP. Current account authentication is
-linked through the existing OpenCode auth store. Metadata with an unknown
-provider package, malformed session identity, unsafe endpoint, extra credential
-fields, or ambiguous model match fails closed. OpenCode 1 retains its existing
-adapter and plugin contract.
-
-A model reference alone is not sufficient for this separate-process boundary.
-In the version-matched OpenCode V2 source, `Model.Ref` carries only provider ID,
-model ID, and optional variant; the native subagent resolver looks up that
-reference in `Model.available()` and rejects a missing model or variant. The
-model catalog is materialized from available provider definitions. In the
-isolated probe, retaining the exact caller-bound reference and linked account
-auth while excluding user/project config and model fetch left both the provider
-and model APIs empty; the reference parsed from config, but no native catalog
-entry existed to resolve it. The isolated effective config retained only the
-reviewer plugin, deny-all permissions with the three bounded reviewer tools
-allowed, and no MCP servers; the existing auth-store symlink was present and
-its contents were not inspected. Plugin tool activation and an authenticated
-model request were not reached after catalog resolution failed. Continue to
-pass an allowlisted provider definition (package and non-secret route settings)
-and the selected model definition (upstream model ID and selected variant
-metadata) until a supported native catalog snapshot is available inside the
-same isolation boundary. The
-probe used OpenCode `v2.0.14` (`anomalyco/opencode` tag commit
-`08462140ec0de1e4b17d4a353d8d5827f53cf7b0`); its bounded model invocation did
-not create a session before timing out, so the conclusion is based on the
-mechanical catalog-resolution blocker, not a successful model response.
+The reviewer session is created with the exact caller model reference and
+deny-all session permissions, except Code Mode `execute` and the bounded
+`lean_review_read/list/grep` actions. Its tool registry is shared by the
+service, but tool execution is restricted to the verified reviewer session and
+an immutable per-session repository binding. Agent/session/model/permissions
+and canonical V2 agent instructions are read back before prompting. A context
+hook replaces ambient system parts (project/global instructions and references)
+with the verified canonical agent instructions and bounded Code Mode catalog;
+it checks only those three tools, no MCP instructions, and no other direct tool
+before the first model request. This is session/agent/tool/instruction isolation, not a
+separate OS process. The launcher rechecks the artifact and canonical bytes
+when the reviewer finishes; unsupported resume bindings fail closed.
 
 ## Codex
 

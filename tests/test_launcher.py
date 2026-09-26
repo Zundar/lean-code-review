@@ -38,6 +38,16 @@ def test_install_collision_idempotence_and_address_only_uninstall(tmp_path, monk
     install.uninstall(ROOT, home)
 
 
+def test_opencode_reviewer_agent_links_are_removed_on_uninstall(tmp_path):
+    home = tmp_path / 'home'
+    install.install(ROOT, home, ['opencode'])
+    agents = [home / f'.config/opencode/agents/spec-reviewer-{depth}.md'
+              for depth in ('lite', 'strict')]
+    assert all(agent.is_symlink() for agent in agents)
+    install.uninstall(ROOT, home)
+    assert all(not agent.exists() and not agent.is_symlink() for agent in agents)
+
+
 def test_codex_caller_binds_adapter_and_delegates(tmp_path):
     import os
     import subprocess

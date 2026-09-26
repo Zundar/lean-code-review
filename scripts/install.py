@@ -23,6 +23,10 @@ def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
     # Claude does not share the universal agents skill discovery path.
     if 'claude' in platforms:
         result[home / '.claude/skills/lean-code-review'] = root
+    if 'opencode' in platforms:
+        for depth in ('lite', 'strict'):
+            name = f'spec-reviewer-{depth}.md'
+            result[home / '.config/opencode/agents' / name] = root / 'assets/platforms/opencode-v2/agents' / name
     return result
 
 
@@ -57,7 +61,7 @@ def install(root: Path, home: Path, platforms: list[str]) -> None:
 
 
 def uninstall(root: Path, home: Path) -> None:
-    planned = links(root, home, ['claude'])
+    planned = links(root, home, ['claude', 'opencode'])
     for path in planned:
         check_parents(path, home)
     for path, target in planned.items():
