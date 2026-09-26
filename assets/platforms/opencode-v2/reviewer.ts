@@ -1,7 +1,6 @@
 import { constants } from "node:fs"
 import { open, opendir, realpath, stat, lstat } from "node:fs/promises"
 import path from "node:path"
-import { Plugin } from "@opencode/plugin"
 
 const RESTRICTED_COMPONENTS = new Set(["secrets", "credentials", "auth", ".ssh", ".git"])
 const RESTRICTED_FILES = new Set([
@@ -187,11 +186,11 @@ export async function registerReviewerTools(ctx: any, repoForSession: (sessionID
     })
 }
 
-export const LeanReviewV2Tools = Plugin.define({
+export const LeanReviewV2Tools = {
   id: "lean-review.opencode-v2-tools",
   setup(ctx) {
     return registerReviewerTools(ctx, () => process.env.LEAN_REVIEW_TARGET_REPO)
   },
-})
+}
 
 export default LeanReviewV2Tools

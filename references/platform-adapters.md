@@ -92,10 +92,10 @@ provider/model/variant through the V2 APIs. The generic launcher freezes the
 artifact, digest, base, target, and repository before the command creates a
 distinct `spec-reviewer-*` session in the same service. Only that service
 resolves its provider-owned connection; no credential values or SQLite file
-move between processes. Install the V2 agent Markdown files with
-`lean-review install --platform opencode` and load the complete
-`assets/platforms/opencode-v2/` command plugin directory, including its bounded
-tools. The V1 caller and Codex execution paths remain separate.
+move between processes. `lean-review install --platform opencode` links the V2
+agent Markdown and global plugin entrypoint directly to canonical source;
+`index.ts` imports the bounded tools from its sibling `reviewer.ts` without
+an npm dependency tree. The V1 caller and Codex execution paths remain separate.
 
 The reviewer session is created with the exact caller model reference and
 deny-all session permissions, except Code Mode `execute` and the bounded
