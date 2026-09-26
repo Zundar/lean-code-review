@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { Plugin } from "@opencode/plugin"
 
 import { bindSession, reviewEnvironment } from "./binding.mjs"
+import { registerReviewerTools } from "./reviewer.ts"
 
 const MAX_OUTPUT = 1024 * 1024
 const TIMEOUT_MS = 900_000
@@ -89,11 +90,12 @@ export function commandArguments(prompt: { text?: string }): string[] {
   return args
 }
 
-function runReview(args: string[], env: Record<string, string>, cwd: string): Promise<string> {
+function runReview(args: string[], env: Record<string, string>, cwd: string,
+                   input = "", raw = false): Promise<string> {
   return new Promise(resolve => {
     let child
     try {
-      child = spawn("lean-review", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] })
+      child = spawn("lean-review", args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
     } catch {
       resolve("lean-review could not start")
       return
@@ -142,7 +144,9 @@ function runReview(args: string[], env: Record<string, string>, cwd: string): Pr
         const structured = code === 0 || code === 1 || code === 2
           ? safeStructuredOutput(trimmed)
           : undefined
-        if (structured) {
+        if (raw && code === 0) {
+          finish(trimmed)
+        } else if (structured) {
           finish(structured)
         } else if (code === 0) {
           finish(redact(trimmed))
@@ -152,23 +156,129 @@ function runReview(args: string[], env: Record<string, string>, cwd: string): Pr
         }
       }
     })
+    child.stdin.on("error", () => {}) // A failed child may close stdin before the packet is written.
+    child.stdin.end(input)
   })
+}
+
+const unwrap = (value: any) => value && typeof value === "object" && "data" in value ? value.data : value
+const allowed = ["execute", "lean_review_read", "lean_review_list", "lean_review_grep"]
+const permissions = [
+  { action: "*", resource: "*", effect: "deny" },
+  ...allowed.map(action => ({ action, resource: "*", effect: "allow" })),
+]
+
+function sameModel(actual: any, expected: any): boolean {
+  return actual?.providerID === expected.providerID && actual?.id === expected.id
+    && actual?.variant === expected.variant
+}
+
+function deniedExceptReviewer(rules: any[]): boolean {
+  if (!Array.isArray(rules) || !rules.length) return false
+  const boundary = rules.findLastIndex(rule => rule.action === "*" && rule.resource === "*" && rule.effect === "deny")
+  if (boundary < 0 || rules.slice(boundary + 1).some(rule => rule.effect === "allow"
+      && (!allowed.includes(rule.action) || rule.resource !== "*"))) return false
+  const effect = (action: string) => rules.filter(rule => rule.resource === "*"
+    && (rule.action === "*" || rule.action === action)).at(-1)?.effect
+  return effect("*") === "deny" && allowed.every(action => effect(action) === "allow")
+    && ["shell", "edit", "subagent", "read", "glob", "grep", "skill", "webfetch", "websearch", "question"]
+      .every(action => effect(action) === "deny")
+}
+
+async function reviewInService(ctx: any, sessionID: string, prompt: any,
+                               bindings: Map<string, { repo: string; model: any; agent: string; checked: boolean }>): Promise<string> {
+  const binding = await bindSession(ctx, sessionID)
+  const args = commandArguments(prompt)
+  const depth = args[args.indexOf("--depth") + 1]
+  if (!["lite", "strict"].includes(depth)) throw new Error("lean-review OpenCode V2: invalid depth")
+  const agent = `spec-reviewer-${depth}`
+  const model = { providerID: binding.providerID, id: binding.modelID,
+    ...(binding.variant ? { variant: binding.variant } : {}) }
+  const env = reviewEnvironment(binding, process.env)
+  const prepared = JSON.parse(await runReview(["v2-prepare", ...args], env, ctx.location.directory, "", true))
+  if (prepared.model !== binding.model || !prepared.runtime || !prepared.repo) {
+    throw new Error("lean-review OpenCode V2: frozen packet does not match the caller")
+  }
+  const profile = unwrap(await ctx.agent.get({ agentID: agent }))
+  if (profile?.id !== agent || profile.mode !== "primary" || !deniedExceptReviewer(profile.permissions)) {
+    throw new Error("lean-review OpenCode V2: dedicated reviewer agent is unavailable or unsafe")
+  }
+  const created = unwrap(await ctx.session.create({ title: `Lean Review ${depth}`, agent, model,
+    location: { directory: ctx.location.directory }, permissions }))
+  if (!created?.id || created.id === sessionID) throw new Error("lean-review OpenCode V2: reviewer session is not distinct")
+  bindings.set(created.id, { repo: prepared.repo, model, agent, checked: false })
+  try {
+    const selected = unwrap(await ctx.session.get({ sessionID: created.id }))
+    const catalog = unwrap(await ctx.tool.list())
+    const models = unwrap(await ctx.model.list())
+    if (selected?.id !== created.id || selected.agent !== agent || !sameModel(selected.model, model)
+        || JSON.stringify(selected.permissions) !== JSON.stringify(permissions)
+        || !deniedExceptReviewer([...profile.permissions, ...selected.permissions])
+        || !Array.isArray(catalog) || !allowed.slice(1).every(id => catalog.some((tool: any) => tool.id === id))
+        || !Array.isArray(models) || models.filter((item: any) => item.providerID === model.providerID && item.id === model.id).length !== 1
+        || (model.variant && !models.find((item: any) => item.providerID === model.providerID && item.id === model.id)
+          ?.variants?.some((item: any) => item.id === model.variant))) {
+      throw new Error("lean-review OpenCode V2: reviewer identity, permissions or tools failed readback")
+    }
+    await ctx.session.prompt({ sessionID: created.id, text: prepared.packet })
+    await ctx.session.wait({ sessionID: created.id })
+    if (!bindings.get(created.id)?.checked) throw new Error("lean-review OpenCode V2: effective tool preflight did not run")
+    const messages = unwrap(await ctx.session.context({ sessionID: created.id }))
+    const replies = messages.filter((item: any) => item.type === "assistant" && item.finish === "stop")
+    const last = replies.at(-1)
+    if (!last || messages.some((item: any) => item.type === "assistant" && !sameModel(item.model, model))) {
+      throw new Error("lean-review OpenCode V2: reviewer steps did not finish on bound model")
+    }
+    const verdict = last.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim()
+    const steps = messages.filter((item: any) => item.type === "assistant" && item.finish)
+    if (!steps.length || steps.some((item: any) => !Number.isInteger(item.tokens?.input)
+        || !Number.isInteger(item.tokens?.output) || !Number.isInteger(item.tokens?.cache?.read))) {
+      throw new Error("lean-review OpenCode V2: model-backed usage is missing")
+    }
+    const usage = { calls: steps.length,
+      input_tokens: steps.reduce((sum: number, item: any) => sum + item.tokens.input, 0),
+      cached_input_tokens: steps.reduce((sum: number, item: any) => sum + item.tokens.cache.read, 0),
+      output_tokens: steps.reduce((sum: number, item: any) => sum + item.tokens.output, 0) }
+    return await runReview(["v2-finish", prepared.runtime], env, ctx.location.directory,
+      JSON.stringify({ session: created.id, verdict, variant: model.variant, usage }))
+  } finally {
+    bindings.delete(created.id)
+  }
 }
 
 export const LeanReviewV2 = Plugin.define({
   id: "lean-review.opencode-v2",
   async setup(ctx) {
+    const bindings = new Map<string, { repo: string; model: any; agent: string; checked: boolean }>()
+    await registerReviewerTools(ctx, sessionID => bindings.get(sessionID)?.repo)
+    await ctx.session.hook("context", event => {
+      const review = bindings.get(event.sessionID)
+      if (!review) return
+      const catalog = event.system.map(part => part.text ?? "").join("\n")
+      const tools = Object.keys(event.tools)
+      const codeMode = catalog.split("## Available tools")[1]?.split("\n\n#")[0] ?? ""
+      const namespaces = [...codeMode.matchAll(/^- ([\w-]+) \((\d+) tools?\)/gm)]
+      const names = [...codeMode.matchAll(/tools\.lean_review\.(read|list|grep)\b/g)].map(match => match[1])
+      if (event.agent !== review.agent || !sameModel(event.model, review.model)
+          || tools.length !== 1 || tools[0] !== "execute"
+          || !catalog.includes("The catalog is complete")
+          || namespaces.length !== 1 || namespaces[0][1] !== "lean_review" || namespaces[0][2] !== "3"
+          || new Set(names).size !== 3 || /<mcp_instructions>/u.test(catalog)) {
+        throw new Error("lean-review OpenCode V2: effective reviewer catalog is unsafe")
+      }
+      review.checked = true
+    })
     await ctx.command.transform(editor => {
       editor.add({
         name: "lean-review",
         description: "Run the isolated lean-review launcher for this exact V2 session.",
         execute: async ({ sessionID, prompt }) => {
-          const binding = await bindSession(ctx, sessionID)
-          const result = await runReview(
-            commandArguments(prompt),
-            reviewEnvironment(binding, process.env, ctx.app.version),
-            ctx.location.directory,
-          )
+          let result
+          try {
+            result = await reviewInService(ctx, sessionID, prompt, bindings)
+          } catch (error) {
+            result = JSON.stringify({ verdict: "BLOCKED", reason: redact(String(error)) })
+          }
           await ctx.session.synthetic({ sessionID, text: result })
         },
       })

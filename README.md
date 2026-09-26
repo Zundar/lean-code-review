@@ -73,7 +73,7 @@ runtime event logs; if a call lacks counters, the aggregate is omitted.
 | --- | --- |
 | Codex | Separate persisted `exec` process; read-only sandbox, approvals never, isolated config, effective session verification |
 | OpenCode 1 | Fresh isolated HOME/XDG/config, canonical provider identity check, deny by default, bounded read/list/grep only |
-| OpenCode 2 | Session-aware `/lean-review` command, V2 provider/model API preflight, native isolated config, deny by default, bounded read/list/grep only |
+| OpenCode 2 | Session-aware `/lean-review` command, distinct reviewer session in the same service, deny by default, bounded read/list/grep only |
 | Claude | Canonical reviewer prompt, isolated config, only Read/Grep/Glob, no MCP or hooks, effective tool catalog verification |
 
 The parent integration binds the current executor context before invoking a new
@@ -108,9 +108,11 @@ A resume uses only its saved runtime adapter/model/reasoning/session. A changed
 caller executor does not change the resumed session. Switching model requires a
 new independent session and does not dismiss previous findings.
 Canonical prompts, tool restrictions and artifact/session checks remain unchanged.
-For OpenCode, an available current provider definition is copied only as the
-allowlisted HTTPS transport/model data needed by the isolated runtime; secrets,
-plugins, MCP and project configuration are not imported.
+OpenCode V2 resolves the caller's selected provider/model/variant in its existing
+service, then runs a separate `spec-reviewer-*` session there. Install the V2
+reviewer agents with `lean-review install --platform opencode`; the command
+checks the effective reviewer tool catalog before its first model request.
+OAuth credentials stay in the provider-owned service store.
 
 ## Check, extend, remove
 

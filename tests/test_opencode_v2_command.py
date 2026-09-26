@@ -17,6 +17,9 @@ def test_opencode_v2_command_reports_results_and_bounded_failures(tmp_path: Path
     source = source.replace(
         'import { Plugin } from "@opencode/plugin"',
         "const Plugin = { define: value => value }",
+    ).replace(
+        'import { registerReviewerTools } from "./reviewer.ts"',
+        'const registerReviewerTools = async () => {}',
     ).replace("function runReview(", "export function runReview(")
     source = source.replace("const MAX_OUTPUT = 1024 * 1024", "const MAX_OUTPUT = 8192")
     source = source.replace("const TIMEOUT_MS = 900_000", "const TIMEOUT_MS = 25")

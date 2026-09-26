@@ -31,8 +31,7 @@ function restricted(relative: string): boolean {
     || basename.startsWith(".env.") || basename.endsWith(".auth.json")
 }
 
-async function targetPath(requested: string): Promise<{ root: string; target: string }> {
-  const configured = process.env.LEAN_REVIEW_TARGET_REPO
+async function targetPath(requested: string, configured: string | undefined): Promise<{ root: string; target: string }> {
   if (!configured || path.isAbsolute(requested)) fail("target repository or relative path is missing")
   const root = await realpath(configured)
   if (root === path.parse(root).root) fail("filesystem-root worktrees are not allowed")
@@ -49,8 +48,8 @@ async function targetPath(requested: string): Promise<{ root: string; target: st
   return { root, target }
 }
 
-async function read(input: { path: string; offset?: number; limit?: number }): Promise<string> {
-  const { target } = await targetPath(input.path)
+async function read(input: { path: string; offset?: number; limit?: number }, repo?: string): Promise<string> {
+  const { target } = await targetPath(input.path, repo)
   const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const info = await handle.stat()
@@ -67,8 +66,8 @@ async function read(input: { path: string; offset?: number; limit?: number }): P
   }
 }
 
-async function list(input: { path: string }): Promise<string> {
-  const { root, target } = await targetPath(input.path)
+async function list(input: { path: string }, repo?: string): Promise<string> {
+  const { root, target } = await targetPath(input.path, repo)
   if (!(await stat(target)).isDirectory()) fail("list target is not a directory")
   const rows: string[] = []
   let omitted = 0
@@ -88,9 +87,9 @@ async function list(input: { path: string }): Promise<string> {
   return [`lean-review-tools.v2 list`, ...rows, `omitted=${omitted}`].join("\n")
 }
 
-async function grep(input: { path: string; query: string; case_sensitive?: boolean }): Promise<string> {
+async function grep(input: { path: string; query: string; case_sensitive?: boolean }, repo?: string): Promise<string> {
   if (!input.query || input.query.length > 256) fail("literal search query must be 1-256 characters")
-  const { root, target } = await targetPath(input.path)
+  const { root, target } = await targetPath(input.path, repo)
   const matches: string[] = []
   let files = 0
   let visited = 0
@@ -173,63 +172,25 @@ const schemas = {
   }, required: ["path", "query"], additionalProperties: false },
 }
 
-export const LeanReviewV2Tools = Plugin.define({
-  id: "lean-review.opencode-v2-tools",
-  async setup(ctx) {
-    const depth = process.env.LEAN_REVIEW_V2_DEPTH
-    const selectedModel = process.env.LEAN_REVIEW_V2_MODEL
-    if (!(["lite", "strict"] as const).includes(depth as "lite" | "strict") || !selectedModel) {
-      fail("V2 preflight context is missing")
-    }
-    const unwrap = (value: any) => value && typeof value === "object" && "data" in value ? value.data : value
-    const agents = unwrap(await ctx.agent.list())
-    const servers = unwrap(await ctx.mcp.list())
-    const models = unwrap(await ctx.model.list())
-    if (!Array.isArray(agents) || !Array.isArray(servers) || servers.length || !Array.isArray(models)) {
-      fail("V2 effective API preflight is unavailable or MCP is enabled")
-    }
-    const agentID = `spec-reviewer-${depth}`
-    const reviewer = agents.find((agent: any) => agent.id === agentID)
-    const rules = reviewer?.permissions
-    const agentModel = typeof reviewer?.model === "string" ? reviewer.model
-      : reviewer?.model?.providerID && reviewer?.model?.id
-        ? `${reviewer.model.providerID}/${reviewer.model.id}${reviewer.model.variant ? `#${reviewer.model.variant}` : ""}`
-        : undefined
-    if (!reviewer || reviewer.mode !== "primary" || agentModel !== selectedModel || !Array.isArray(rules)) {
-      fail("V2 effective reviewer agent does not match the isolated contract")
-    }
-    const expectedTools = ["lean_review_read", "lean_review_list", "lean_review_grep"]
-    const lastRule = (action: string) => rules.filter((rule: any) =>
-      rule.resource === "*" && (rule.action === "*" || rule.action === action)).at(-1)
-    if (lastRule("*")?.effect !== "deny"
-        || expectedTools.some(name => lastRule(name)?.effect !== "allow")
-        || ["read", "glob", "grep", "shell", "edit", "subagent", "webfetch", "websearch", "skill"]
-          .some(name => lastRule(name)?.effect !== "deny")) {
-      fail("V2 effective reviewer permissions do not preserve read-only isolation")
-    }
+export async function registerReviewerTools(ctx: any, repoForSession: (sessionID: string) => string | undefined) {
     await ctx.tool.transform(editor => {
       editor.namespace({ name: "lean_review", description: "Bounded read-only review tools" })
       editor.add({ name: "read", description: "Read a bounded project file, excluding secrets and symlinks.",
         input: schemas.read, options: { namespace: "lean_review" },
-        execute: async input => read(input as { path: string; offset?: number; limit?: number }) })
+        execute: async (input, context) => ({ content: await read(input as { path: string; offset?: number; limit?: number }, repoForSession(context.sessionID)) }) })
       editor.add({ name: "list", description: "List a project directory without restricted entries or symlinks.",
         input: schemas.list, options: { namespace: "lean_review" },
-        execute: async input => list(input as { path: string }) })
+        execute: async (input, context) => ({ content: await list(input as { path: string }, repoForSession(context.sessionID)) }) })
       editor.add({ name: "grep", description: "Search bounded project files for literal text without secrets.",
         input: schemas.grep, options: { namespace: "lean_review" },
-        execute: async input => grep(input as { path: string; query: string; case_sensitive?: boolean }) })
+        execute: async (input, context) => ({ content: await grep(input as { path: string; query: string; case_sensitive?: boolean }, repoForSession(context.sessionID)) }) })
     })
-    const tools = unwrap(await ctx.tool.list())
-    if (!Array.isArray(tools) || expectedTools.some(id => !tools.some((item: any) => item.id === id))) {
-      fail("V2 bounded reviewer tools are unavailable")
-    }
-    const [modelName, variant] = selectedModel.split("#")
-    const [providerID, modelID] = modelName.split("/")
-    const matchingModels = models.filter((model: any) => model.providerID === providerID && model.id === modelID)
-    if (matchingModels.length !== 1
-        || (variant && !matchingModels[0].variants?.some((item: any) => item.id === variant))) {
-      fail("V2 selected reviewer model or reasoning variant is unavailable")
-    }
+}
+
+export const LeanReviewV2Tools = Plugin.define({
+  id: "lean-review.opencode-v2-tools",
+  setup(ctx) {
+    return registerReviewerTools(ctx, () => process.env.LEAN_REVIEW_TARGET_REPO)
   },
 })
 

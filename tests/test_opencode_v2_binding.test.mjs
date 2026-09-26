@@ -10,18 +10,7 @@ function clientFor(id, providerID, modelID) {
     session: {
       get: async ({ sessionID }) => {
         calls.push(["session", sessionID])
-        return { data: { id: sessionID, model: { providerID, id: modelID } } }
-      },
-    },
-    provider: {
-      get: async ({ providerID: requested }) => {
-        calls.push(["provider", requested])
-        return { data: {
-          id: requested,
-          package: "@opencode/ai/providers/openai-compatible",
-          settings: { baseURL: `https://${requested}.example/v1`, apiKey: "not-copied", transport: "websocket" },
-          headers: { Authorization: "not-copied" },
-        } }
+        return { data: { id: sessionID, model: { providerID, id: modelID, variant: "high" } } }
       },
     },
     model: {
@@ -41,32 +30,19 @@ function clientFor(id, providerID, modelID) {
   }
 }
 
-test("binds the exact V2 session model and copies only safe metadata", async () => {
+test("binds only the exact V2 session provider, model, and variant", async () => {
   const client = clientFor("session-a", "provider-a", "model-a")
   const binding = await bindSession(client, "session-a")
 
   assert.deepEqual(client.calls, [
     ["session", "session-a"],
-    ["provider", "provider-a"],
     ["models"],
   ])
   assert.equal(binding.model, "provider-a/model-a")
-  assert.deepEqual(binding.metadata, {
-    provider: {
-      id: "provider-a",
-      package: "@opencode/ai/providers/openai-compatible",
-      settings: { baseURL: "https://provider-a.example/v1", transport: "websocket" },
-    },
-    model: {
-      id: "model-a",
-      modelID: "upstream",
-      providerID: "provider-a",
-      name: "session-a",
-      capabilities: { tools: true, input: ["text"], output: ["text"] },
-      limit: { context: 200000, output: 64000 },
-      variants: [{ id: "high", settings: { reasoningEffort: "high" } }],
-    },
-  }, "2.0.14")
+  assert.equal(binding.variant, "high")
+  assert.equal(binding.providerID, "provider-a")
+  assert.equal(binding.modelID, "model-a")
+  assert.equal(binding.metadata, undefined)
 })
 
 test("parallel sessions remain bound to their explicit identity", async () => {
@@ -81,22 +57,9 @@ test("parallel sessions remain bound to their explicit identity", async () => {
   assert.equal(b.sessionID, "session-b")
 })
 
-test("supports an allowlisted native OpenAI provider definition", async () => {
-  const client = clientFor("session-openai", "openai", "gpt-6-luna")
-  client.provider.get = async () => ({ data: {
-    id: "openai",
-    package: "@opencode/ai/providers/openai",
-    settings: { baseURL: "https://chatgpt.com/backend-api/codex", transport: "websocket" },
-    headers: { authorization: "not-copied" },
-  } })
-  const binding = await bindSession(client, "session-openai")
-
-  assert.equal(binding.model, "openai/gpt-6-luna")
-  assert.deepEqual(binding.metadata.provider, {
-    id: "openai",
-    package: "@opencode/ai/providers/openai",
-    settings: { baseURL: "https://chatgpt.com/backend-api/codex", transport: "websocket" },
-  })
+test("provider-owned routing does not gate the selected model", async () => {
+  const binding = await bindSession(clientFor("session-a", "other-provider", "model-a"), "session-a")
+  assert.equal(binding.model, "other-provider/model-a")
 })
 
 test("missing, duplicate, and unsafe session metadata fail closed", async () => {
@@ -116,16 +79,19 @@ test("missing, duplicate, and unsafe session metadata fail closed", async () => 
     id: "another-session", model: { providerID: "provider-a", id: "model-a" },
   } })
   await assert.rejects(bindSession(mismatched, "session-a"), /current session model/)
+
+  const missingVariant = clientFor("session-a", "provider-a", "model-a")
+  missingVariant.model.list = async () => ({ data: [{ providerID: "provider-a", id: "model-a", variants: [] }] })
+  await assert.rejects(bindSession(missingVariant, "session-a"), /variant is unavailable/)
 })
 
-test("child launch receives only bound reviewer variables and nonsecret runtime context", () => {
+test("packet preparation receives only the model reference and nonsecret runtime context", () => {
   const env = reviewEnvironment({
     model: "provider-a/model-a",
-    metadata: { provider: {}, model: {} },
   }, {
     PATH: "/safe/bin", HOME: "/home/user", XDG_DATA_HOME: "/home/user/.local/share",
     OPENAI_API_KEY: "do-not-copy", LEAN_REVIEW_CURRENT_MODEL: "stale",
-  }, "2.0.14")
+  })
 
   assert.deepEqual(env, {
     PATH: "/safe/bin",
@@ -133,8 +99,5 @@ test("child launch receives only bound reviewer variables and nonsecret runtime 
     XDG_DATA_HOME: "/home/user/.local/share",
     LEAN_REVIEW_RUNTIME_ADAPTER: "opencode",
     LEAN_REVIEW_CURRENT_MODEL: "provider-a/model-a",
-    LEAN_REVIEW_OPENCODE_V2_METADATA: '{"provider":{},"model":{}}',
-    LEAN_REVIEW_OPENCODE_CLI: process.execPath,
-    LEAN_REVIEW_OPENCODE_VERSION: "2.0.14",
   })
 })
