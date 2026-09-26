@@ -24,6 +24,7 @@ def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
     if 'claude' in platforms:
         result[home / '.claude/skills/lean-code-review'] = root
     if 'opencode' in platforms:
+        result[home / '.config/opencode/plugins/lean-review-v2.ts'] = root / 'assets/platforms/opencode-v2/index.ts'
         for depth in ('lite', 'strict'):
             name = f'spec-reviewer-{depth}.md'
             result[home / '.config/opencode/agents' / name] = root / 'assets/platforms/opencode-v2/agents' / name
@@ -78,6 +79,11 @@ def doctor(root: Path, home: Path, projects: list[Path]) -> dict:
             errors.append(str(exc))
         if not owned(path, target) or not path.exists():
             errors.append(f'missing, broken or mismatched link: {path}')
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    agents = home / '.config/opencode/agents'
+    if any(os.path.lexists(agents / f'spec-reviewer-{depth}.md') for depth in ('lite', 'strict')) and not owned(
+            plugin, root / 'assets/platforms/opencode-v2/index.ts'):
+        errors.append(f'missing, broken or mismatched link: {plugin}')
     found = shutil.which('lean-review')
     if not found or Path(found).resolve() != root / 'scripts/lean-review':
         errors.append('lean-review on PATH does not resolve to this checkout')

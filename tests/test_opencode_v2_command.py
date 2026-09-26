@@ -15,9 +15,6 @@ def test_opencode_v2_command_reports_results_and_bounded_failures(tmp_path: Path
 
     source = (ROOT / "assets/platforms/opencode-v2/index.ts").read_text(encoding="utf-8")
     source = source.replace(
-        'import { Plugin } from "@opencode/plugin"',
-        "const Plugin = { define: value => value }",
-    ).replace(
         'import { registerReviewerTools } from "./reviewer.ts"',
         'const registerReviewerTools = async () => {}',
     ).replace("function runReview(", "export function runReview(")
