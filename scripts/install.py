@@ -32,7 +32,7 @@ def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
 
 
 def owned(path: Path, target: Path) -> bool:
-    return path.is_symlink() and path.resolve() == target.resolve()
+    return path.is_symlink() and os.readlink(path) == str(target)
 
 
 def collision(path: Path, target: Path) -> bool:
