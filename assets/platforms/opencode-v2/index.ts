@@ -167,6 +167,7 @@ const permissions = [
   { action: "*", resource: "*", effect: "deny" },
   ...allowed.map(action => ({ action, resource: "*", effect: "allow" })),
 ]
+const bindings = new Map<string, { repo: string; model: any; agent: string; system: string; checked: boolean }>()
 // The context hook replaces every ambient system part, including project/global instructions.
 const reviewerCatalog = `# Code Mode
 Use the execute tool to call only the bounded tools listed below. They work only inside execute.
@@ -261,7 +262,6 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
 export const LeanReviewV2 = Plugin.define({
   id: "lean-review.opencode-v2",
   async setup(ctx) {
-    const bindings = new Map<string, { repo: string; model: any; agent: string; system: string; checked: boolean }>()
     await registerReviewerTools(ctx, sessionID => bindings.get(sessionID)?.repo)
     await ctx.session.hook("context", event => {
       const review = bindings.get(event.sessionID)
