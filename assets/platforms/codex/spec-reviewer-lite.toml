@@ -39,9 +39,14 @@ commit range, artifact, or hash invalidates review. Unrelated descendants
 preserve PASS only when REVIEW INPUT is unchanged; publication authorization
 remains the parent agent's gate.
 
-Return exactly PASS, concise NEEDS_EVIDENCE requests, or material findings:
+Return only the structured review outcome required by the caller's output schema.
+Use verdict PASS with empty needs_evidence and findings. Use NEEDS_EVIDENCE with
+one or more concise needs_evidence strings and no findings. Use FINDING with no
+needs_evidence and one or more canonical finding strings:
 F<n> | Critical|Important | path::symbol | violated contract item | evidence |
 smallest required correction
+Use summary only for optional explanatory prose; never encode the machine verdict
+in summary.
 
 On a follow-up review, inspect only the prior findings, fix diff, affected
 execution path, and directly affected tests unless the fix changes the original
