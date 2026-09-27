@@ -19,6 +19,18 @@ from scripts.install import ROOT
 
 RUNTIME_ADAPTERS = ('codex', 'opencode', 'claude')
 
+CODEX_REVIEW_OUTCOME_SCHEMA = {
+    'type': 'object',
+    'additionalProperties': False,
+    'properties': {
+        'verdict': {'type': 'string', 'enum': ['PASS', 'NEEDS_EVIDENCE', 'FINDING']},
+        'summary': {'type': 'string'},
+        'needs_evidence': {'type': 'array', 'items': {'type': 'string'}},
+        'findings': {'type': 'array', 'items': {'type': 'string'}},
+    },
+    'required': ['verdict', 'summary', 'needs_evidence', 'findings'],
+}
+
 
 class Blocked(RuntimeError):
     pass
@@ -122,7 +134,8 @@ def opencode_major_version(executable: str | None = None, expected: str | None =
     return major
 
 
-def codex_command(root: Path, runtime: Path, depth: str, selection: dict, session: str | None) -> list[str]:
+def codex_command(root: Path, runtime: Path, depth: str, selection: dict,
+                  session: str | None, output_schema: Path) -> list[str]:
     data = codex_profile(root, depth)
     config = {
         'model_reasoning_effort': data['model_reasoning_effort'],
@@ -133,7 +146,8 @@ def codex_command(root: Path, runtime: Path, depth: str, selection: dict, sessio
     }
     if selection['model'] is not None:
         config['model'] = model_name(selection['model'], 'codex')
-    argv = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--json']
+    argv = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--json',
+            '--output-schema', str(output_schema)]
     if not session:
         argv += ['--sandbox', 'read-only']
     for key, value in config.items():
@@ -143,6 +157,58 @@ def codex_command(root: Path, runtime: Path, depth: str, selection: dict, sessio
     else:
         argv += ['-']
     return argv
+
+
+def codex_review_outcome(raw: str) -> tuple[str, dict]:
+    def unique_object(pairs):
+        outcome = {}
+        for key, value in pairs:
+            if key in outcome:
+                raise ValueError('duplicate JSON key')
+            outcome[key] = value
+        return outcome
+
+    try:
+        outcome = json.loads(raw, object_pairs_hook=unique_object)
+    except ValueError as exc:
+        raise Blocked('Codex reviewer returned malformed structured verdict') from exc
+    expected = {'verdict', 'summary', 'needs_evidence', 'findings'}
+    if not isinstance(outcome, dict) or set(outcome) != expected or not isinstance(outcome['summary'], str):
+        raise Blocked('Codex reviewer returned malformed structured verdict')
+    for key in ('needs_evidence', 'findings'):
+        values = outcome[key]
+        if (not isinstance(values, list)
+                or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                       or '\n' in value or '\r' in value
+                       for value in values)):
+            raise Blocked('Codex reviewer returned malformed structured verdict')
+    verdict = outcome['verdict']
+    needs = outcome['needs_evidence']
+    findings = outcome['findings']
+    if verdict == 'PASS':
+        if needs or findings:
+            raise Blocked('Codex reviewer returned contradictory structured verdict')
+        return 'PASS', outcome
+    if verdict == 'NEEDS_EVIDENCE':
+        if not needs or findings:
+            raise Blocked('Codex reviewer returned contradictory structured verdict')
+        return 'NEEDS_EVIDENCE | ' + ' | '.join(needs), outcome
+    if verdict == 'FINDING':
+        if needs or not findings:
+            raise Blocked('Codex reviewer returned contradictory structured verdict')
+        for index, finding in enumerate(findings, 1):
+            if '\n' in finding or '\r' in finding or finding.count(' | ') != 5:
+                raise Blocked('Codex reviewer returned malformed finding')
+            parts = finding.split(' | ', 5)
+            if len(parts) != 6 or parts[0] != f'F{index}' or parts[1] not in ('Critical', 'Important'):
+                raise Blocked('Codex reviewer returned malformed finding')
+            path, separator, symbol = parts[2].partition('::')
+            if (any(part != part.strip() for part in parts)
+                    or not separator or not path or not symbol
+                    or any(not part.strip() for part in parts[3:])):
+                raise Blocked('Codex reviewer returned malformed finding')
+        return '\n'.join(findings), outcome
+    raise Blocked('Codex reviewer returned malformed structured verdict')
 
 
 def opencode_prepare(root: Path, runtime: Path, depth: str, model: str | None = None,
@@ -276,7 +342,7 @@ def codex_parent_model() -> str:
 
 
 def codex_result(events: list[dict], runtime: Path,
-                 session_snapshot: tuple[Path, int] | None = None) -> tuple[str, str, dict]:
+                 session_snapshot: tuple[Path, int] | None = None) -> tuple[str, str, dict, dict]:
     threads = [e.get('thread_id') for e in events if e.get('type') == 'thread.started']
     messages = [e['item']['text'] for e in events if e.get('type') == 'item.completed'
                 and e.get('item', {}).get('type') == 'agent_message']
@@ -305,7 +371,8 @@ def codex_result(events: list[dict], runtime: Path,
         raise Blocked('Codex effective session is not read-only/never')
     observed = {'model': reported_value([c.get('model') for c in contexts]),
                 'reasoning_effort': reported_value([c.get('effort') for c in contexts])}
-    return messages[-1].strip(), threads[-1], observed
+    verdict, outcome = codex_review_outcome(messages[-1].strip())
+    return verdict, threads[-1], observed, outcome
 
 
 def session_usage(runtime: Path, runtime_adapter: str) -> dict | None:
@@ -519,18 +586,23 @@ def review(args) -> dict:
               'Review only this packet using the configured reviewer contract. Return the final verdict.\n')
     session = previous['session'] if previous else None
     observed = {'model': None, 'reasoning_effort': None}
+    review_outcome = None
     if runtime_adapter == 'codex':
         auth = Path(os.environ.get('CODEX_HOME', str(home / '.codex'))) / 'auth.json'
         link = runtime / 'codex/auth.json'
         if auth.is_file() and not link.exists():
             link.symlink_to(auth)
-        argv = codex_command(ROOT, runtime, args.depth, selection, session)
+        output_schema = runtime / f'{stem}.schema.json'
+        private_file(output_schema,
+                     (json.dumps(CODEX_REVIEW_OUTCOME_SCHEMA, separators=(',', ':')) + '\n').encode())
+        output_schema.chmod(0o400)
+        argv = codex_command(ROOT, runtime, args.depth, selection, session, output_schema)
         session_snapshot = None
         if session:
             path = codex_session_file(runtime / 'codex/sessions', session)
             session_snapshot = (path, path.stat().st_size)
         events = run_process(argv, runtime, env, packet, stem)
-        verdict, session, observed = codex_result(events, runtime, session_snapshot)
+        verdict, session, observed, review_outcome = codex_result(events, runtime, session_snapshot)
         if observed['model'] is None:
             raise Blocked('Codex did not report one effective model')
         observed['model'] = model_name(observed['model'], 'codex')
@@ -594,7 +666,9 @@ def review(args) -> dict:
                      opencode_version=opencode_version)
     (runtime / 'session.json').write_text(json.dumps(state))
     usage = session_usage(runtime, runtime_adapter)
-    return {**state, **({'usage': usage} if usage is not None else {}), 'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
+    return {**state, **({'usage': usage} if usage is not None else {}),
+            **({'review_outcome': review_outcome} if review_outcome is not None else {}),
+            'verdict': verdict, 'artifact': str(artifact), 'sha256': args.sha256,
             'base': args.base, 'target': args.target, 'runtime': str(runtime)}
 
 

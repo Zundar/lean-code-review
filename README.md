@@ -89,7 +89,10 @@ delegates to `lean-review`. Without an explicit `--model`, it binds the parent
 model from `CODEX_THREAD_ID` and the one matching rollout in the current
 `CODEX_HOME` (or `~/.codex`). Missing or duplicate parent rollouts block before
 the child model call. The child is started with that exact model and its
-observed model must match. Resume keeps the saved reviewer model and session.
+observed model must match. Codex final responses use a native output schema for
+the machine verdict and keep optional prose separate; malformed or contradictory
+structured outcomes block fail-closed. Resume keeps the saved reviewer model and
+session and uses the same verdict schema.
 
 OpenCode uses the caller-bound full `provider/model` unless an explicit full
 `provider/model` is provided; Codex uses medium/high effort by depth. Claude

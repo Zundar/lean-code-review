@@ -13,6 +13,15 @@ from scripts.check_opencode_lean_review import ALLOWED, CheckError, check
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def codex_outcome_text(verdict='PASS', summary='ok', needs_evidence=None, findings=None):
+    return json.dumps({
+        'verdict': verdict,
+        'summary': summary,
+        'needs_evidence': needs_evidence or [],
+        'findings': findings or [],
+    })
+
+
 def test_neutral_workflow():
     text = (ROOT / 'SKILL.md').read_text()
     for literal in ('OpenCode', 'Codex', 'AGY', 'Crush', 'Claude', '~/', '.opencode', '.agents'):
@@ -162,9 +171,11 @@ def test_codex_model_selection_is_local_and_read_only():
         launch.resolve_runtime(ROOT, 'strict', 'codex', None)
     assert (ROOT / 'assets/platforms/codex/spec-reviewer-strict.toml').read_bytes() == original
     for session in (None, 'existing-thread'):
-        command = launch.codex_command(ROOT, ROOT, 'strict', selection, session)
+        schema = ROOT / 'review-outcome.schema.json'
+        command = launch.codex_command(ROOT, ROOT, 'strict', selection, session, schema)
         assert 'sandbox_mode="read-only"' in command and 'approval_policy="never"' in command
         assert '--ignore-user-config' in command and '--ignore-rules' in command
+        assert command[command.index('--output-schema') + 1] == str(schema)
         assert 'model="explicit-model"' in command and 'model_reasoning_effort="high"' in command
         assert ('resume' in command) == bool(session)
 
@@ -327,12 +338,36 @@ def test_codex_effective_writable_session_rejected(tmp_path):
     path = tmp_path / 'codex/sessions/run.jsonl'
     path.parent.mkdir(parents=True)
     events = [{'type': 'thread.started', 'thread_id': 'id'},
-              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': codex_outcome_text()}}]
     path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'id'}}) + '\n'
                     + json.dumps({'type': 'turn_context', 'payload': {
                         'sandbox_policy': {'type': 'danger-full-access'}, 'approval_policy': 'never'}}))
     with pytest.raises(launch.Blocked, match='effective session'):
         launch.codex_result(events, tmp_path)
+
+
+def test_codex_structured_verdict_is_machine_readable_and_fail_closed():
+    assert launch.codex_review_outcome(codex_outcome_text())[0] == 'PASS'
+    assert launch.codex_review_outcome(codex_outcome_text(
+        'NEEDS_EVIDENCE', needs_evidence=['show exact SHA']))[0] == 'NEEDS_EVIDENCE | show exact SHA'
+    finding = 'F1 | Important | adapters/runtime.py::review | contract | evidence | correction'
+    assert launch.codex_review_outcome(codex_outcome_text('FINDING', findings=[finding]))[0] == finding
+    for raw in (
+        'PASS — explanation',
+        codex_outcome_text('PASS', findings=[finding]),
+        codex_outcome_text('NEEDS_EVIDENCE'),
+        codex_outcome_text('NEEDS_EVIDENCE', needs_evidence=['line one\nline two']),
+        codex_outcome_text('FINDING', findings=['not canonical']),
+        codex_outcome_text('FINDING', findings=['F1 | Important |  |  |  | ']),
+        codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py | contract | evidence | correction']),
+        codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence | correction | extra']),
+        codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence\nsecond line | correction']),
+        codex_outcome_text('FINDING', findings=[' F1 | Important | adapters/runtime.py::review | contract | evidence | correction ']),
+        json.dumps({'verdict': 'PASS', 'summary': 'ok', 'needs_evidence': []}),
+        '{"verdict":"FINDING","verdict":"PASS","summary":"ok","needs_evidence":[],"findings":[]}',
+    ):
+        with pytest.raises(launch.Blocked):
+            launch.codex_review_outcome(raw)
 
 
 def test_opencode_trailing_external_allow_is_rejected(tmp_path):
@@ -407,7 +442,7 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
         + json.dumps({'type': 'turn_context', 'payload': {
             'model': 'caller-model', 'effort': 'medium'}}) + '\n')
     events = [{'type': 'thread.started', 'thread_id': 'same-session'},
-              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}, codex]
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': codex_outcome_text()}}, codex]
 
     observation = {'model': 'caller-model', 'effort': 'medium'}
     calls = []
@@ -415,6 +450,8 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     def run(argv, runtime, env, prompt, stem):
         assert 'model="caller-model"' in argv
         assert 'sandbox_mode="read-only"' in argv and 'approval_policy="never"' in argv
+        schema = Path(argv[argv.index('--output-schema') + 1])
+        assert json.loads(schema.read_text()) == launch.CODEX_REVIEW_OUTCOME_SCHEMA
         context = runtime / 'codex/sessions/run.jsonl'
         context.parent.mkdir(parents=True, exist_ok=True)
         new_session = not context.exists()
@@ -436,6 +473,7 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
     assert first['usage'] == {'calls': 1, **codex['usage']}
+    assert first['review_outcome']['verdict'] == 'PASS'
     assert first['model'] == 'caller-model' and first['reasoning_effort'] == 'medium'
     assert first['observed'] == {'model': 'caller-model', 'reasoning_effort': 'medium'}
     args.resume = Path(first['runtime'])
@@ -582,7 +620,7 @@ def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, 
             context.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'session'}})
                                + '\n' + turn)
         events = [{'type': 'thread.started', 'thread_id': 'session'},
-                  {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+                  {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': codex_outcome_text()}}]
         (runtime / f'{stem}.jsonl').write_text('\n'.join(map(json.dumps, events)))
         return events
 
@@ -647,7 +685,7 @@ def test_codex_result_uses_exact_matching_session(tmp_path):
     sessions = tmp_path / 'codex/sessions'
     sessions.mkdir(parents=True)
     events = [{'type': 'thread.started', 'thread_id': 'current-thread'},
-              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'PASS'}}]
+              {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': codex_outcome_text()}}]
     matching = sessions / 'matching.jsonl'
     unrelated = sessions / 'unrelated.jsonl'
     old = json.dumps({'type': 'turn_context', 'payload': {
