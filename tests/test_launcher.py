@@ -356,6 +356,7 @@ def test_codex_structured_verdict_is_machine_readable_and_fail_closed():
         'PASS — explanation',
         codex_outcome_text('PASS', findings=[finding]),
         codex_outcome_text('NEEDS_EVIDENCE'),
+        codex_outcome_text('NEEDS_EVIDENCE', needs_evidence=['line one\nline two']),
         codex_outcome_text('FINDING', findings=['not canonical']),
         codex_outcome_text('FINDING', findings=['F1 | Important |  |  |  | ']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py | contract | evidence | correction']),

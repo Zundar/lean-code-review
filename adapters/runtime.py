@@ -179,6 +179,7 @@ def codex_review_outcome(raw: str) -> tuple[str, dict]:
         values = outcome[key]
         if (not isinstance(values, list)
                 or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                       or '\n' in value or '\r' in value
                        for value in values)):
             raise Blocked('Codex reviewer returned malformed structured verdict')
     verdict = outcome['verdict']
