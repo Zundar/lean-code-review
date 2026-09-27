@@ -178,9 +178,9 @@ def codex_review_outcome(raw: str) -> tuple[str, dict]:
     for key in ('needs_evidence', 'findings'):
         values = outcome[key]
         if (not isinstance(values, list)
-                or any(not isinstance(value, str) or not value.strip() for value in values)):
+                or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                       for value in values)):
             raise Blocked('Codex reviewer returned malformed structured verdict')
-        outcome[key] = [value.strip() for value in values]
     verdict = outcome['verdict']
     needs = outcome['needs_evidence']
     findings = outcome['findings']
@@ -202,7 +202,8 @@ def codex_review_outcome(raw: str) -> tuple[str, dict]:
             if len(parts) != 6 or parts[0] != f'F{index}' or parts[1] not in ('Critical', 'Important'):
                 raise Blocked('Codex reviewer returned malformed finding')
             path, separator, symbol = parts[2].partition('::')
-            if (not separator or not path.strip() or not symbol.strip()
+            if (any(part != part.strip() for part in parts)
+                    or not separator or not path or not symbol
                     or any(not part.strip() for part in parts[3:])):
                 raise Blocked('Codex reviewer returned malformed finding')
         return '\n'.join(findings), outcome

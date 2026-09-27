@@ -361,6 +361,7 @@ def test_codex_structured_verdict_is_machine_readable_and_fail_closed():
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py | contract | evidence | correction']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence | correction | extra']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence\nsecond line | correction']),
+        codex_outcome_text('FINDING', findings=[' F1 | Important | adapters/runtime.py::review | contract | evidence | correction ']),
         json.dumps({'verdict': 'PASS', 'summary': 'ok', 'needs_evidence': []}),
         '{"verdict":"FINDING","verdict":"PASS","summary":"ok","needs_evidence":[],"findings":[]}',
     ):
