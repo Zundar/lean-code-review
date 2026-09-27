@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process"
-import { Plugin } from "@opencode/plugin"
 
 import { bindSession, reviewEnvironment } from "./binding.mjs"
 import { registerReviewerTools } from "./reviewer.ts"
@@ -259,7 +258,7 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
   }
 }
 
-export const LeanReviewV2 = Plugin.define({
+export const LeanReviewV2 = {
   id: "lean-review.opencode-v2",
   async setup(ctx) {
     await registerReviewerTools(ctx, sessionID => bindings.get(sessionID)?.repo)
@@ -302,6 +301,6 @@ export const LeanReviewV2 = Plugin.define({
       })
     })
   },
-})
+}
 
 export default LeanReviewV2

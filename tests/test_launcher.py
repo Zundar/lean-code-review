@@ -44,8 +44,47 @@ def test_opencode_reviewer_agent_links_are_removed_on_uninstall(tmp_path):
     agents = [home / f'.config/opencode/agents/spec-reviewer-{depth}.md'
               for depth in ('lite', 'strict')]
     assert all(agent.is_symlink() for agent in agents)
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    assert plugin.is_symlink() and plugin.resolve() == ROOT / 'assets/platforms/opencode-v2/index.ts'
+    assert not (ROOT / 'assets/platforms/opencode-v2/package.json').exists()
+    assert not (ROOT / 'assets/platforms/opencode-v2/package-lock.json').exists()
+    plugin.unlink()
+    assert any(str(plugin) in error for error in install.doctor(ROOT, home, [])['errors'])
+    install.install(ROOT, home, ['opencode'])
+    assert plugin.is_symlink()
     install.uninstall(ROOT, home)
     assert all(not agent.exists() and not agent.is_symlink() for agent in agents)
+    assert not plugin.is_symlink()
+
+
+@pytest.mark.parametrize('foreign', ['symlink', 'indirect', 'file'])
+def test_opencode_v2_plugin_migrates_only_known_cache_link(tmp_path, foreign):
+    home = tmp_path / 'home'
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    plugin.parent.mkdir(parents=True)
+    legacy = home / '.cache/lean-code-review/opencode-v2/index.ts'
+    plugin.symlink_to(legacy)
+
+    install.install(ROOT, home, ['opencode'])
+
+    canonical = ROOT / 'assets/platforms/opencode-v2/index.ts'
+    assert plugin.is_symlink() and plugin.resolve() == canonical
+
+    plugin.unlink()
+    if foreign == 'symlink':
+        plugin.symlink_to(tmp_path / 'foreign.ts')
+        original = plugin.readlink()
+    elif foreign == 'indirect':
+        intermediary = tmp_path / 'indirect.ts'
+        intermediary.symlink_to(canonical)
+        plugin.symlink_to(intermediary)
+        original = plugin.readlink()
+    else:
+        plugin.write_text('foreign')
+        original = plugin.read_text()
+    with pytest.raises(ValueError, match='foreign path collision'):
+        install.install(ROOT, home, ['opencode'])
+    assert (plugin.read_text() if foreign == 'file' else plugin.readlink()) == original
 
 
 def test_codex_caller_binds_adapter_and_delegates(tmp_path):

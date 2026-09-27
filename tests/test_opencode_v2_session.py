@@ -17,8 +17,6 @@ def test_v2_session_binding_and_effective_catalog(tmp_path: Path, failure: str) 
     if not node:
         pytest.skip('Node 24+ is unavailable')
     source = (ROOT / 'assets/platforms/opencode-v2/index.ts').read_text()
-    source = source.replace('import { Plugin } from "@opencode/plugin"',
-                            'const Plugin = { define: value => value }')
     source = source.replace('import { registerReviewerTools } from "./reviewer.ts"',
                             'export const toolLookups = []; const registerReviewerTools = async (_, lookup) => toolLookups.push(lookup)')
     (tmp_path / 'index.ts').write_text(source)
@@ -118,8 +116,7 @@ def test_v2_bounded_tools_use_session_bound_repo_and_codemode_result(tmp_path: P
     repo.mkdir()
     (repo / 'safe.txt').write_text('review evidence')
     (repo / '.env').write_text('do not show')
-    source = (ROOT / 'assets/platforms/opencode-v2/reviewer.ts').read_text().replace(
-        'import { Plugin } from "@opencode/plugin"', 'const Plugin = { define: value => value }')
+    source = (ROOT / 'assets/platforms/opencode-v2/reviewer.ts').read_text()
     (tmp_path / 'reviewer.ts').write_text(source)
     runner = tmp_path / 'tools.mjs'
     runner.write_text('''import assert from "node:assert/strict"

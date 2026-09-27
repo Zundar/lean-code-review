@@ -2,6 +2,15 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { bindSession, reviewEnvironment } from "../assets/platforms/opencode-v2/binding.mjs"
+import LeanReviewV2 from "../assets/platforms/opencode-v2/index.ts"
+import LeanReviewV2Tools from "../assets/platforms/opencode-v2/reviewer.ts"
+
+test("V2 plugin entrypoints load as dependency-free structural objects", () => {
+  for (const plugin of [LeanReviewV2, LeanReviewV2Tools]) {
+    assert.equal(typeof plugin.id, "string")
+    assert.equal(typeof plugin.setup, "function")
+  }
+})
 
 function clientFor(id, providerID, modelID) {
   const calls = []

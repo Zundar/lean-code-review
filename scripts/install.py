@@ -24,6 +24,7 @@ def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
     if 'claude' in platforms:
         result[home / '.claude/skills/lean-code-review'] = root
     if 'opencode' in platforms:
+        result[home / '.config/opencode/plugins/lean-review-v2.ts'] = root / 'assets/platforms/opencode-v2/index.ts'
         for depth in ('lite', 'strict'):
             name = f'spec-reviewer-{depth}.md'
             result[home / '.config/opencode/agents' / name] = root / 'assets/platforms/opencode-v2/agents' / name
@@ -31,7 +32,7 @@ def links(root: Path, home: Path, platforms: list[str]) -> dict[Path, Path]:
 
 
 def owned(path: Path, target: Path) -> bool:
-    return path.is_symlink() and path.resolve() == target.resolve()
+    return path.is_symlink() and os.readlink(path) == str(target)
 
 
 def collision(path: Path, target: Path) -> bool:
@@ -48,14 +49,21 @@ def check_parents(path: Path, home: Path) -> None:
 
 def install(root: Path, home: Path, platforms: list[str]) -> None:
     planned = links(root, home, platforms)
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    legacy_plugin = home / '.cache/lean-code-review/opencode-v2/index.ts'
+    migrations = set()
     for path, target in planned.items():
         check_parents(path, home)
         if not target.exists():
             raise ValueError(f'missing canonical source: {target}')
-        if collision(path, target):
+        if path == plugin and path.is_symlink() and os.readlink(path) == str(legacy_plugin):
+            migrations.add(path)
+        elif collision(path, target):
             raise ValueError(f'foreign path collision: {path}')
     for path, target in planned.items():
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path in migrations:
+            path.unlink()
         if not owned(path, target):
             path.symlink_to(target, target_is_directory=target.is_dir())
 
@@ -78,6 +86,11 @@ def doctor(root: Path, home: Path, projects: list[Path]) -> dict:
             errors.append(str(exc))
         if not owned(path, target) or not path.exists():
             errors.append(f'missing, broken or mismatched link: {path}')
+    plugin = home / '.config/opencode/plugins/lean-review-v2.ts'
+    agents = home / '.config/opencode/agents'
+    if any(os.path.lexists(agents / f'spec-reviewer-{depth}.md') for depth in ('lite', 'strict')) and not owned(
+            plugin, root / 'assets/platforms/opencode-v2/index.ts'):
+        errors.append(f'missing, broken or mismatched link: {plugin}')
     found = shutil.which('lean-review')
     if not found or Path(found).resolve() != root / 'scripts/lean-review':
         errors.append('lean-review on PATH does not resolve to this checkout')

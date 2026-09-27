@@ -110,7 +110,9 @@ new independent session and does not dismiss previous findings.
 Canonical prompts, tool restrictions and artifact/session checks remain unchanged.
 OpenCode V2 resolves the caller's selected provider/model/variant in its existing
 service, then runs a separate `spec-reviewer-*` session there. Install the V2
-reviewer agents with `lean-review install --platform opencode`; the command
+source plugin and reviewer agents with `lean-review install --platform opencode`;
+the plugin link points directly to the canonical `index.ts` (which imports `reviewer.ts`),
+without npm or a generated dependency tree. The command
 checks the effective reviewer tool catalog before its first model request.
 OAuth credentials stay in the provider-owned service store.
 

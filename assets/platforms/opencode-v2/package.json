@@ -1,8 +1,0 @@
-{
-  "name": "lean-review-opencode-v2-plugin",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@opencode/plugin": "2.0.14"
-  }
-}
