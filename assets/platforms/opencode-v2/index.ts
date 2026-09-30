@@ -320,7 +320,6 @@ export const LeanReviewV2 = {
       editor.add({
         description: "Run an independent review in this exact OpenCode V2 session.",
         name: "lean_review_start",
-        codemode: false,
         input: {
           type: "object",
           properties: {
@@ -358,7 +357,7 @@ export const LeanReviewV2 = {
             return { output: result, content: JSON.stringify(result) }
           }
         },
-      })
+      }, { codemode: false })
     })
   },
 }
