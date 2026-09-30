@@ -357,7 +357,7 @@ export const LeanReviewV2 = {
             return { output: result, content: JSON.stringify(result) }
           }
         },
-      }, { codemode: false })
+      })
     })
   },
 }
