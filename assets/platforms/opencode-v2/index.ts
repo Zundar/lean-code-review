@@ -199,7 +199,7 @@ function deniedExceptReviewer(rules: any[]): boolean {
 async function reviewInService(ctx: any, sessionID: string, prompt: any,
                                bindings: Map<string, { repo: string; model: any; agent: string; system: string; checked: boolean }>): Promise<string> {
   const binding = await bindSession(ctx, sessionID)
-  const args = commandArguments(prompt)
+  const args = Array.isArray(prompt) ? prompt : commandArguments(prompt)
   const depth = args[args.indexOf("--depth") + 1]
   if (!["lite", "strict"].includes(depth)) throw new Error("lean-review OpenCode V2: invalid depth")
   const agent = `spec-reviewer-${depth}`
@@ -258,6 +258,21 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
   }
 }
 
+function reviewToolArguments(input: any): string[] {
+  return ["--depth", input.depth, "--repo", input.repo, "--artifact", input.artifact,
+    "--sha256", input.sha256, "--base", input.base, "--target", input.target,
+    "--goal", input.goal, "--requirements", input.requirements,
+    "--task-paths", input.task_paths.join(","), "--evidence", input.evidence]
+}
+
+function reviewToolResult(result: string): any {
+  try {
+    const value = JSON.parse(result)
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.verdict === "string") return value
+  } catch {}
+  return { verdict: "BLOCKED", reason: "review returned no structured verdict" }
+}
+
 export const LeanReviewV2 = {
   id: "lean-review.opencode-v2",
   async setup(ctx) {
@@ -265,6 +280,7 @@ export const LeanReviewV2 = {
     await ctx.session.hook("context", event => {
       const review = bindings.get(event.sessionID)
       if (!review) return
+      delete event.tools.lean_review_start
       if (!Array.isArray(event.system) || !event.system.some(part => part.type === "text" && part.text === review.system)) {
         throw new Error("lean-review OpenCode V2: canonical reviewer instructions are missing")
       }
@@ -297,6 +313,49 @@ export const LeanReviewV2 = {
             result = JSON.stringify({ verdict: "BLOCKED", reason: redact(String(error)) })
           }
           await ctx.session.synthetic({ sessionID, text: result })
+        },
+      })
+    })
+    await ctx.tool.transform(editor => {
+      editor.add({
+        description: "Run an independent review in this exact OpenCode V2 session.",
+        name: "lean_review_start",
+        input: {
+          type: "object",
+          properties: {
+            depth: { type: "string", enum: ["lite", "strict"] },
+            repo: { type: "string" },
+            artifact: { type: "string" },
+            sha256: { type: "string" },
+            base: { type: "string" },
+            target: { type: "string" },
+            goal: { type: "string" },
+            requirements: { type: "string" },
+            task_paths: { type: "array", items: { type: "string" } },
+            evidence: { type: "string" },
+          },
+          required: ["depth", "repo", "artifact", "sha256", "base", "target", "goal", "requirements", "task_paths", "evidence"],
+          additionalProperties: false,
+        },
+        output: {
+          type: "object",
+          properties: { verdict: { type: "string" } },
+          required: ["verdict"],
+          additionalProperties: true,
+        },
+        execute: async (input: any, context: any) => {
+          try {
+            if (bindings.has(context.sessionID) || /^spec-reviewer-(lite|strict)$/u.test(context.agent ?? "")) {
+              return { output: { verdict: "BLOCKED", reason: "reviewer sessions cannot start reviews" },
+                content: "{\"verdict\":\"BLOCKED\",\"reason\":\"reviewer sessions cannot start reviews\"}" }
+            }
+            const result = reviewToolResult(await reviewInService(ctx, context.sessionID,
+              reviewToolArguments(input), bindings))
+            return { output: result, content: JSON.stringify(result) }
+          } catch (error) {
+            const result = { verdict: "BLOCKED", reason: redact(String(error)) }
+            return { output: result, content: JSON.stringify(result) }
+          }
         },
       })
     })
