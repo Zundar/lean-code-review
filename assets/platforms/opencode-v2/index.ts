@@ -1,4 +1,7 @@
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
+import { realpathSync } from "node:fs"
+import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { bindSession, reviewEnvironment } from "./binding.mjs"
 import { registerReviewerTools } from "./reviewer.ts"
@@ -6,6 +9,22 @@ import { registerReviewerTools } from "./reviewer.ts"
 const MAX_OUTPUT = 1024 * 1024
 const TIMEOUT_MS = 900_000
 const SECRET_KEY = /(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)(?:$|[_-])/iu
+const pluginPath = realpathSync(fileURLToPath(import.meta.url))
+const pluginRoot = resolve(dirname(pluginPath), "../../..")
+
+function captureLoadedIdentity(): { reviewer_sha: string; skill_identity: string } | undefined {
+  try {
+    const output = execFileSync("lean-review", ["v2-identity", "--root", pluginRoot], {
+      encoding: "utf8", timeout: 5000, maxBuffer: 4096,
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+    })
+    const identity = JSON.parse(output)
+    if (/^[0-9a-f]{40}$/u.test(identity.reviewer_sha)
+        && /^[0-9a-f]{64}$/u.test(identity.skill_identity)) return identity
+  } catch {}
+}
+
+const loadedIdentity = captureLoadedIdentity()
 
 function redact(value: string): string {
   return value
@@ -210,6 +229,10 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
   if (prepared.model !== binding.model || !prepared.runtime || !prepared.repo) {
     throw new Error("lean-review OpenCode V2: frozen packet does not match the caller")
   }
+  if (!loadedIdentity || prepared.reviewer_sha !== loadedIdentity.reviewer_sha
+      || prepared.skill_identity !== loadedIdentity.skill_identity) {
+    throw new Error("lean-review OpenCode V2: reviewer changed; start a fresh OpenCode service/session")
+  }
   const profile = unwrap(await ctx.agent.get({ agentID: agent }))
   if (profile?.id !== agent || profile.mode !== "primary" || !deniedExceptReviewer(profile.permissions)
       || !prepared.agent_system || profile.system !== prepared.agent_system) {
@@ -252,7 +275,8 @@ async function reviewInService(ctx: any, sessionID: string, prompt: any,
       cached_input_tokens: steps.reduce((sum: number, item: any) => sum + item.tokens.cache.read, 0),
       output_tokens: steps.reduce((sum: number, item: any) => sum + item.tokens.output, 0) }
     return await runReview(["v2-finish", prepared.runtime], env, ctx.location.directory,
-      JSON.stringify({ session: created.id, verdict, variant: model.variant, usage }))
+      JSON.stringify({ session: created.id, verdict, variant: model.variant, usage,
+        reviewer_sha: prepared.reviewer_sha, skill_identity: prepared.skill_identity }))
   } finally {
     bindings.delete(created.id)
   }
@@ -276,6 +300,7 @@ function reviewToolResult(result: string): any {
 export const LeanReviewV2 = {
   id: "lean-review.opencode-v2",
   async setup(ctx) {
+    if (!loadedIdentity) throw new Error("lean-review OpenCode V2: loaded reviewer identity is unavailable")
     await registerReviewerTools(ctx, sessionID => bindings.get(sessionID)?.repo)
     await ctx.session.hook("context", event => {
       const review = bindings.get(event.sessionID)

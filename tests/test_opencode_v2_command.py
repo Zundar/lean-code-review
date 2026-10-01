@@ -19,7 +19,7 @@ def test_opencode_v2_command_reports_results_and_bounded_failures(tmp_path: Path
         'const registerReviewerTools = async () => {}',
     ).replace("function runReview(", "export function runReview(")
     source = source.replace("const MAX_OUTPUT = 1024 * 1024", "const MAX_OUTPUT = 8192")
-    source = source.replace("const TIMEOUT_MS = 900_000", "const TIMEOUT_MS = 25")
+    source = source.replace("const TIMEOUT_MS = 900_000", "const TIMEOUT_MS = 1000")
     (tmp_path / "index.ts").write_text(source, encoding="utf-8")
     (tmp_path / "binding.mjs").write_text(
         (ROOT / "assets/platforms/opencode-v2/binding.mjs").read_text(encoding="utf-8"),

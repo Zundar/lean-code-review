@@ -51,6 +51,10 @@ its hash, creates a private immutable copy, sends the entire artifact as review
 data, and binds its JSON result to the exact digest/base/target. It does not
 create or infer a diff for you. Treat findings as exit 2 and **BLOCKED** as exit 1;
 exit 0 requires exactly **PASS**. A CLI exit code alone is never PASS.
+Every result includes `reviewer_sha` (the full commit of the clean canonical Git
+checkout) and `skill_identity`. Resumes require the same pair; OpenCode V2 also
+blocks before its reviewer model call when the loaded plugin and PATH launcher
+have different identities, until a fresh service/session loads the current one.
 
 For a narrow fix, prepare a new artifact and pass `--resume <runtime>` with
 the previous result's runtime directory. This retains the same reviewer

@@ -429,6 +429,7 @@ def v2_prepare(args) -> dict:
     if caller_context()[0] != 'opencode':
         raise Blocked('V2 preparation requires the OpenCode caller adapter')
     model = model_name(caller_context()[1], 'opencode')
+    identity = reviewer_identity()
     cache = Path.home() / '.cache/lean-code-review'
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
     runtime = Path(tempfile.mkdtemp(prefix='review-', dir=cache))
@@ -448,10 +449,11 @@ def v2_prepare(args) -> dict:
     state = {'runtime_adapter': 'opencode', 'model': model, 'depth': args.depth,
              'repo': str(repo), 'artifact_source': str(args.artifact.resolve(strict=True)),
              'artifact': str(artifact), 'sha256': args.sha256, 'base': args.base,
-             'target': args.target, 'skill_identity': skill_identity()}
+             'target': args.target, **identity}
     private_file(runtime / 'pending.json', json.dumps(state).encode())
     return {'runtime': str(runtime), 'packet': packet, 'model': model, 'repo': str(repo),
-            'artifact': str(artifact), 'sha256': args.sha256, 'agent_system': agent_system}
+            'artifact': str(artifact), 'sha256': args.sha256, 'agent_system': agent_system,
+            **identity}
 
 
 def v2_finish(runtime: Path, outcome: dict) -> dict:
@@ -460,7 +462,10 @@ def v2_finish(runtime: Path, outcome: dict) -> dict:
             or runtime.stat().st_uid != os.getuid() or runtime.stat().st_mode & 0o077):
         raise Blocked('V2 runtime must be private and owned')
     state = json.loads((runtime / 'pending.json').read_text())
-    if (state['skill_identity'] != skill_identity()
+    if (not isinstance(outcome, dict)
+            or state['reviewer_sha'] != outcome.get('reviewer_sha')
+            or state['skill_identity'] != outcome.get('skill_identity')
+            or reviewer_identity() != {key: state[key] for key in ('reviewer_sha', 'skill_identity')}
             or hashlib.sha256(Path(state['artifact']).read_bytes()).hexdigest() != state['sha256']
             or hashlib.sha256(Path(state['artifact_source']).read_bytes()).hexdigest() != state['sha256']):
         raise Blocked('review bytes or canonical reviewer changed during V2 review')
@@ -520,7 +525,7 @@ def review(args) -> dict:
             saved_runtime_adapter = previous.get('backend')
             if saved_runtime_adapter != 'claude':
                 raise Blocked('legacy/incomplete reviewer session; start a new review')
-        required = {'model', 'reasoning_effort', 'depth', 'repo', 'session', 'skill_identity'}
+        required = {'model', 'reasoning_effort', 'depth', 'repo', 'session', 'reviewer_sha', 'skill_identity'}
         if saved_runtime_adapter is None or not required <= previous.keys():
             raise Blocked('legacy/incomplete reviewer session; start a new review')
         if saved_runtime_adapter not in RUNTIME_ADAPTERS:
@@ -563,9 +568,9 @@ def review(args) -> dict:
         opencode_major = opencode_major_version(opencode_cli, opencode_version)
         if opencode_major >= 2:
             raise Blocked('OpenCode V2 reviews must start in the caller service /lean-review command')
-    identity = skill_identity()
+    identity = reviewer_identity()
     if previous:
-        if previous['skill_identity'] != identity:
+        if any(previous[key] != identity[key] for key in identity):
             raise Blocked('canonical reviewer bytes changed since this session')
     else:
         cache = home / '.cache/lean-code-review'
@@ -653,14 +658,14 @@ def review(args) -> dict:
         observed['model'] = reported_value([init.get('model')])
     if hashlib.sha256(artifact.read_bytes()).hexdigest() != args.sha256 or hashlib.sha256(args.artifact.read_bytes()).hexdigest() != args.sha256:
         raise Blocked('review artifact changed during review')
-    if skill_identity() != identity:
+    if reviewer_identity() != identity:
         raise Blocked('canonical reviewer bytes changed during review')
     if previous and session != previous['session']:
         raise Blocked('recheck replaced reviewer session')
     if verdict != 'PASS' and not verdict.startswith(('NEEDS_EVIDENCE', 'F1 |')):
         raise Blocked(f'reviewer returned no valid final verdict; inspect {runtime}')
     state = {**selection, 'depth': args.depth, 'repo': str(repo), 'session': session,
-             'skill_identity': identity, 'observed': observed}
+             **identity, 'observed': observed}
     if opencode_major is not None:
         state.update(opencode_major=opencode_major, opencode_cli=opencode_cli,
                      opencode_version=opencode_version)
@@ -672,11 +677,35 @@ def review(args) -> dict:
             'base': args.base, 'target': args.target, 'runtime': str(runtime)}
 
 
-def skill_identity() -> str:
+def skill_identity(root: Path = ROOT) -> str:
     paths = ['SKILL.md', 'adapters/runtime.py', 'adapters/opencode_v2.py',
              'scripts/check_opencode_lean_review.py']
-    paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT / 'assets/platforms').rglob('*')) if p.is_file()]
-    return hashlib.sha256(b''.join(canonical(ROOT, p) for p in paths)).hexdigest()
+    paths += [str(p.relative_to(root)) for p in sorted((root / 'assets/platforms').rglob('*')) if p.is_file()]
+    return hashlib.sha256(b''.join(canonical(root, p) for p in paths)).hexdigest()
+
+
+def reviewer_identity(root: Path = ROOT) -> dict[str, str]:
+    """Bind runtime results to one clean checkout of the canonical reviewer repository."""
+    root = root.resolve(strict=True)
+    try:
+        top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=root,
+                             check=True, capture_output=True, text=True).stdout.strip()
+        sha = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], cwd=root,
+                             check=True, capture_output=True, text=True).stdout.strip()
+        origin = subprocess.run(['git', 'remote', 'get-url', 'origin'], cwd=root,
+                                check=True, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=root,
+                               check=True, capture_output=True, text=True).stdout
+        index_flags = subprocess.run(['git', 'ls-files', '-v', '-z'], cwd=root,
+                                      check=True, capture_output=True).stdout.split(b'\0')
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Blocked('canonical reviewer checkout is not a Git repository') from exc
+    if (Path(top).resolve() != root or not re.fullmatch(r'[0-9a-f]{40}', sha)
+            or origin not in {'git@github.com:Zundar/lean-code-review.git',
+                              'https://github.com/Zundar/lean-code-review.git'} or dirty
+            or any(entry and entry[:1] != b'H' for entry in index_flags)):
+        raise Blocked('canonical reviewer checkout is dirty, noncanonical or ambiguous')
+    return {'reviewer_sha': sha, 'skill_identity': skill_identity(root)}
 
 
 def main(argv=None) -> int:
@@ -684,6 +713,16 @@ def main(argv=None) -> int:
     if arguments and arguments[0] in ('install', 'doctor', 'uninstall'):
         from scripts.install import main as manage
         return manage(arguments)
+    identity_command = bool(arguments and arguments[0] == 'v2-identity')
+    if identity_command:
+        parser = argparse.ArgumentParser(description='Return the exact clean reviewer checkout identity.')
+        parser.add_argument('--root', type=Path, default=ROOT)
+        try:
+            print(json.dumps(reviewer_identity(parser.parse_args(arguments[1:]).root)))
+            return 0
+        except (Blocked, CheckError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            print(json.dumps({'verdict': 'BLOCKED', 'reason': str(exc)}))
+            return 1
     preparing = bool(arguments and arguments[0] == 'v2-prepare')
     finishing = bool(arguments and arguments[0] == 'v2-finish')
     if preparing:
@@ -692,7 +731,7 @@ def main(argv=None) -> int:
         try:
             print(json.dumps(v2_finish(Path(arguments[1]), json.load(sys.stdin))))
             return 0
-        except (Blocked, OSError, ValueError, KeyError) as exc:
+        except (Blocked, CheckError, OSError, ValueError, KeyError) as exc:
             print(json.dumps({'verdict': 'BLOCKED', 'reason': str(exc)}))
             return 1
     parser = argparse.ArgumentParser(description=__doc__)
