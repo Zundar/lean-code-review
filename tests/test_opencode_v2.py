@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -152,25 +153,84 @@ def test_v2_parent_service_freezes_artifact_and_rechecks_it_on_finish(tmp_path, 
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
     monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'openai/model-a')
+    identity = {'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64}
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
     args = SimpleNamespace(repo=repo, artifact=artifact, sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                            base='0' * 40, target='worktree', model=None, resume=None, depth='strict',
                            goal='review', requirements='preserve', task_paths='diff.patch', evidence='focused')
     frozen = launch.v2_prepare(args)
+    assert {key: frozen[key] for key in identity} == identity
     assert Path(frozen['artifact']).read_bytes() == artifact.read_bytes()
     assert f'sha256:{args.sha256}' in frozen['packet']
     assert 'base:' + args.base in frozen['packet']
     assert 'Target repository for nearby context: ' + str(repo) in frozen['packet']
     with pytest.raises(launch.Blocked, match='valid final verdict'):
-        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'unknown'})
+        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'unknown', **identity})
     artifact.write_text('changed after reviewer request')
     with pytest.raises(launch.Blocked, match='review bytes'):
-        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS'})
+        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS', **identity})
     artifact.write_text('small immutable diff')
     result = launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS',
-                                                       'variant': 'medium'})
+                                                       'variant': 'medium', **identity})
     assert result['session'] == 'ses-reviewer'
     assert result['model'] == 'openai/model-a'
     assert result['verdict'] == 'PASS'
+    assert {key: result[key] for key in identity} == identity
+
+
+def test_v2_finish_blocks_when_reviewer_changes_after_prepare(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('small immutable diff')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'openai/model-a')
+    current = {'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64}
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: current)
+    args = SimpleNamespace(repo=repo, artifact=artifact, sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='0' * 40, target='worktree', model=None, resume=None, depth='strict',
+                           goal='review', requirements='preserve', task_paths='diff.patch', evidence='focused')
+    frozen = launch.v2_prepare(args)
+    current['reviewer_sha'] = 'c' * 40
+    with pytest.raises(launch.Blocked, match='canonical reviewer changed'):
+        launch.v2_finish(Path(frozen['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS',
+                                                   'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64})
+
+
+def test_reviewer_identity_requires_exact_clean_canonical_git_checkout(tmp_path, monkeypatch, capsys):
+    missing = tmp_path / 'non-git'
+    missing.mkdir()
+    with pytest.raises(launch.Blocked, match='not a Git repository'):
+        launch.reviewer_identity(missing)
+    repo = tmp_path / 'reviewer'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    subprocess.run(['git', '-C', str(repo), 'remote', 'add', 'origin',
+                    'git@github.com:Zundar/lean-code-review.git'], check=True)
+    (repo / 'tracked').write_text('reviewer update')
+    subprocess.run(['git', '-C', str(repo), 'add', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                    'commit', '-qm', 'reviewer'], check=True)
+    monkeypatch.setattr(launch, 'skill_identity', lambda root: 'b' * 64)
+    identity = launch.reviewer_identity(repo)
+    assert identity == {'reviewer_sha': subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(), 'skill_identity': 'b' * 64}
+    assert launch.main(['v2-identity', '--root', str(repo)]) == 0
+    assert json.loads(capsys.readouterr().out) == identity
+    (repo / 'tracked').write_text('dirty')
+    with pytest.raises(launch.Blocked, match='dirty, noncanonical or ambiguous'):
+        launch.reviewer_identity(repo)
+
+    (repo / 'tracked').write_text('reviewer')
+    subprocess.run(['git', '-C', str(repo), 'add', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                    'commit', '-qm', 'reviewer update'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'remote', 'set-url', 'origin', 'https://example.com/other.git'],
+                   check=True)
+    assert launch.main(['v2-identity', '--root', str(repo)]) == 1
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked['verdict'] == 'BLOCKED'
 
 
 def test_v2_version_is_bound_to_the_host_executable(tmp_path, monkeypatch):

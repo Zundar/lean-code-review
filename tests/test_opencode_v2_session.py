@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('failure', ['none', 'catalog', 'mcp', 'scoped-allow', 'model-drift',
-                                     'hostile-ambient', 'bad-profile', 'missing-system'])
+                                     'hostile-ambient', 'bad-profile', 'missing-system',
+                                     'reviewer-mismatch', 'identity-mismatch'])
 def test_v2_session_binding_and_effective_catalog(tmp_path: Path, failure: str) -> None:
     node = shutil.which('node')
     if not node:
@@ -19,13 +20,16 @@ def test_v2_session_binding_and_effective_catalog(tmp_path: Path, failure: str) 
     source = (ROOT / 'assets/platforms/opencode-v2/index.ts').read_text()
     source = source.replace('import { registerReviewerTools } from "./reviewer.ts"',
                             'export const toolLookups = []; const registerReviewerTools = async (_, lookup) => toolLookups.push(lookup)')
+    source = source.replace('const loadedIdentity = captureLoadedIdentity()',
+                            'const loadedIdentity = { reviewer_sha: "a".repeat(40), skill_identity: "b".repeat(64) }')
     (tmp_path / 'index.ts').write_text(source)
     (tmp_path / 'binding.mjs').write_bytes((ROOT / 'assets/platforms/opencode-v2/binding.mjs').read_bytes())
     agent_system = (ROOT / 'assets/platforms/opencode-v2/agents/spec-reviewer-lite.md').read_text().split('---', 2)[2].strip()
     (tmp_path / 'agent.json').write_text(json.dumps(agent_system))
     (tmp_path / 'prepared.json').write_text(json.dumps({
         'runtime': '/private/review', 'repo': '/review/repo', 'model': 'openai/model-a',
-        'packet': 'immutable packet', 'agent_system': agent_system}))
+        'packet': 'immutable packet', 'agent_system': agent_system,
+        'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64}))
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
     executable = bin_dir / 'lean-review'
@@ -51,8 +55,15 @@ const rules = [{ action: "*", resource: "*", effect: "deny" },
 if (process.argv[2] === "scoped-allow") rules.push({ action: "shell", resource: "/tmp/*", effect: "allow" })
 const commands = [], hooks = [], tools = []
 let created, prompted = false, modelRequests = 0, outcome
+if (["reviewer-mismatch", "identity-mismatch"].includes(process.argv[2])) {
+  const prepared = JSON.parse(readFileSync(`${process.env.HOME}/prepared.json`, "utf8"))
+  prepared[process.argv[2] === "reviewer-mismatch" ? "reviewer_sha" : "skill_identity"] = "c".repeat(
+    process.argv[2] === "reviewer-mismatch" ? 40 : 64)
+  writeFileSync(`${process.env.HOME}/prepared.json`, JSON.stringify(prepared))
+}
 writeFileSync(`${process.env.HOME}/final.json`, JSON.stringify({
-  verdict: process.argv[5] ?? "PASS", session: "ses_reviewer" }))
+  verdict: process.argv[5] ?? "PASS", session: "ses_reviewer",
+  reviewer_sha: "a".repeat(40), skill_identity: "b".repeat(64) }))
 const ctx = {
   app: { version: "2.0.14" }, location: { directory: process.argv[3] },
   command: { transform: async fn => fn({ add: definition => commands.push(definition) }) },
@@ -131,13 +142,21 @@ const expected = process.argv[4] === "tool" && ["none", "mcp", "hostile-ambient"
   ? process.argv[5] ?? "PASS"
   : ["none", "mcp", "hostile-ambient"].includes(process.argv[2]) ? "PASS" : "BLOCKED"
 assert.equal(outcome.verdict, expected, outcome.reason)
-if (["scoped-allow", "bad-profile"].includes(process.argv[2])) { assert.equal(created, undefined); assert.equal(prompted, false) }
+if (expected === "PASS") assert.equal(outcome.reviewer_sha, "a".repeat(40))
+if (["reviewer-mismatch", "identity-mismatch"].includes(process.argv[2])) {
+  assert.match(outcome.reason, /fresh OpenCode service[/]session/)
+}
+if (["scoped-allow", "bad-profile", "reviewer-mismatch", "identity-mismatch"].includes(process.argv[2])) {
+  assert.equal(created, undefined); assert.equal(prompted, false)
+}
 else { assert.equal(created.agent, "spec-reviewer-lite"); assert.deepEqual(created.model, model) }
 if (["scoped-allow", "bad-profile"].includes(process.argv[2])) process.exit(0)
-assert.equal(created.agent, "spec-reviewer-lite")
-assert.deepEqual(created.model, model)
-assert.deepEqual(created.permissions, rules)
-assert.equal(prompted, true)
+if (!["reviewer-mismatch", "identity-mismatch"].includes(process.argv[2])) {
+  assert.equal(created.agent, "spec-reviewer-lite")
+  assert.deepEqual(created.model, model)
+  assert.deepEqual(created.permissions, rules)
+  assert.equal(prompted, true)
+}
 assert.equal(modelRequests, ["none", "mcp", "hostile-ambient", "model-drift"].includes(process.argv[2]) ? 1 : 0)
 ''')
     result = subprocess.run([node, str(runner), failure, str(tmp_path), 'command'],

@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -409,6 +410,8 @@ def test_uninstall_preflights_parents_and_preserves_matching_project_links(tmp_p
 
 def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch):
     import subprocess
+    identity = {'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64}
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
     # Counter shapes captured from actual CLI events, without prompts or payloads.
     codex = {'type': 'turn.completed', 'usage': {
         'input_tokens': 161537, 'cached_input_tokens': 114176, 'output_tokens': 3676}}
@@ -472,6 +475,8 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
                            depth='lite',
                            resume=None, goal='test', requirements='test', task_paths='diff.patch', evidence='test')
     first = launch.review(args)
+    assert first['reviewer_sha'] == launch.reviewer_identity()['reviewer_sha']
+    assert re.fullmatch(r'[0-9a-f]{40}', first['reviewer_sha'])
     assert first['usage'] == {'calls': 1, **codex['usage']}
     assert first['review_outcome']['verdict'] == 'PASS'
     assert first['model'] == 'caller-model' and first['reasoning_effort'] == 'medium'
@@ -479,6 +484,15 @@ def test_runtime_usage_passthrough_and_session_aggregation(tmp_path, monkeypatch
     args.resume = Path(first['runtime'])
     state_file = args.resume / 'session.json'
     saved = json.loads(state_file.read_text())
+    identity = launch.reviewer_identity()
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: {
+        **identity, 'reviewer_sha': '0' * 40,
+    })
+    calls_before_change = len(calls)
+    with pytest.raises(launch.Blocked, match='canonical reviewer bytes changed'):
+        launch.review(args)
+    assert len(calls) == calls_before_change
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
     second = launch.review(args)
     assert second['runtime_adapter'] == 'codex' and second['model'] == first['model']
     assert second['observed'] == {'model': 'caller-model', 'reasoning_effort': 'medium'}
@@ -544,6 +558,8 @@ def test_caller_context_and_depth(tmp_path):
 
 def test_claude_legacy_resume_keeps_compatibility(tmp_path, monkeypatch):
     import subprocess
+    identity = {'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64}
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
 
     repo = tmp_path / 'repo'
     repo.mkdir()
@@ -557,7 +573,7 @@ def test_claude_legacy_resume_keeps_compatibility(tmp_path, monkeypatch):
     (runtime / 'session.json').write_text(json.dumps({
         'backend': 'claude', 'model': 'claude-model', 'reasoning_effort': None,
         'depth': 'lite', 'repo': str(repo), 'session': 'same-session',
-        'skill_identity': launch.skill_identity(),
+        **launch.reviewer_identity(),
     }))
 
     def run(argv, *_args):
@@ -577,10 +593,14 @@ def test_claude_legacy_resume_keeps_compatibility(tmp_path, monkeypatch):
                            task_paths='diff.patch', evidence='test')
     result = launch.review(args)
     assert result['runtime_adapter'] == 'claude'
+    assert result['reviewer_sha'] == launch.reviewer_identity()['reviewer_sha']
 
 
 def test_codex_binds_observed_model_and_rejects_missing_or_mismatched(tmp_path, monkeypatch):
     import subprocess
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: {
+        'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64,
+    })
 
     repo = tmp_path / 'repo'
     subprocess.run(['git', 'init', '-q', str(repo)], check=True)
@@ -778,6 +798,9 @@ def test_opencode_without_current_model_blocks_before_runtime_call(tmp_path, mon
 
 def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypatch):
     import subprocess
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: {
+        'reviewer_sha': 'a' * 40, 'skill_identity': 'b' * 64,
+    })
     _, repo, _, agent = isolated(tmp_path)
     subprocess.run(['git', 'init', '-q', str(repo)], check=True)
     artifact = repo / 'diff.patch'
@@ -823,6 +846,7 @@ def test_opencode_current_model_preserves_existing_isolation(tmp_path, monkeypat
                            depth='strict', resume=None, goal='test', requirements='test',
                            task_paths='diff.patch', evidence='test')
     first = launch.review(args)
+    assert first['reviewer_sha'] == 'a' * 40
     args.resume, args.model = Path(first['runtime']), None
     second = launch.review(args)
     assert len(calls) == 2 and second['session'] == first['session']
