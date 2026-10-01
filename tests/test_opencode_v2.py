@@ -222,10 +222,23 @@ def test_reviewer_identity_requires_exact_clean_canonical_git_checkout(tmp_path,
     with pytest.raises(launch.Blocked, match='dirty, noncanonical or ambiguous'):
         launch.reviewer_identity(repo)
 
-    (repo / 'tracked').write_text('reviewer')
-    subprocess.run(['git', '-C', str(repo), 'add', 'tracked'], check=True)
-    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
-                    'commit', '-qm', 'reviewer update'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'checkout', '--', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'update-index', '--assume-unchanged', 'tracked'], check=True)
+    (repo / 'tracked').write_text('assume-unchanged drift')
+    assert not subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True)
+    with pytest.raises(launch.Blocked, match='dirty, noncanonical or ambiguous'):
+        launch.reviewer_identity(repo)
+
+    subprocess.run(['git', '-C', str(repo), 'update-index', '--no-assume-unchanged', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'checkout', '--', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'update-index', '--skip-worktree', 'tracked'], check=True)
+    (repo / 'tracked').write_text('skip-worktree drift')
+    assert not subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True)
+    with pytest.raises(launch.Blocked, match='dirty, noncanonical or ambiguous'):
+        launch.reviewer_identity(repo)
+
+    subprocess.run(['git', '-C', str(repo), 'update-index', '--no-skip-worktree', 'tracked'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'checkout', '--', 'tracked'], check=True)
     subprocess.run(['git', '-C', str(repo), 'remote', 'set-url', 'origin', 'https://example.com/other.git'],
                    check=True)
     assert launch.main(['v2-identity', '--root', str(repo)]) == 1

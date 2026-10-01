@@ -696,11 +696,14 @@ def reviewer_identity(root: Path = ROOT) -> dict[str, str]:
                                 check=True, capture_output=True, text=True).stdout.strip()
         dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=root,
                                check=True, capture_output=True, text=True).stdout
+        index_flags = subprocess.run(['git', 'ls-files', '-v', '-z'], cwd=root,
+                                      check=True, capture_output=True).stdout.split(b'\0')
     except (OSError, subprocess.SubprocessError) as exc:
         raise Blocked('canonical reviewer checkout is not a Git repository') from exc
     if (Path(top).resolve() != root or not re.fullmatch(r'[0-9a-f]{40}', sha)
             or origin not in {'git@github.com:Zundar/lean-code-review.git',
-                              'https://github.com/Zundar/lean-code-review.git'} or dirty):
+                              'https://github.com/Zundar/lean-code-review.git'} or dirty
+            or any(entry and entry[:1] != b'H' for entry in index_flags)):
         raise Blocked('canonical reviewer checkout is dirty, noncanonical or ambiguous')
     return {'reviewer_sha': sha, 'skill_identity': skill_identity(root)}
 
