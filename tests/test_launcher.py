@@ -335,6 +335,92 @@ def test_artifact_mismatch_and_unknown_runtime_fail_closed(tmp_path, monkeypatch
     assert artifact.read_text() == 'exact diff'
 
 
+def test_normalize_target_accepts_only_worktree_or_full_immutable_sha():
+    for size in (40, 64):
+        sha = 'a' * size
+        assert launch.normalize_target(sha) == f'commit:{sha}'
+        assert launch.normalize_target(f'commit:{sha}') == f'commit:{sha}'
+    assert launch.normalize_target('worktree') == 'worktree'
+    for target in ('a' * 39, 'a' * 63, 'main', 'v1.0', 'HEAD', 'refs/heads/main',
+                   'commit:' + 'A' * 40, 'not-a-target'):
+        with pytest.raises(launch.Blocked, match='target'):
+            launch.normalize_target(target)
+
+
+def test_review_normalizes_bare_target_in_packet_and_result(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    target = 'a' * 40
+    identity = {'reviewer_sha': 'b' * 40, 'skill_identity': 'c' * 64}
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(launch.shutil, 'which', lambda _: '/mock/claude')
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'claude')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'claude-model')
+
+    def run(_argv, _runtime, _env, prompt, _stem):
+        assert f'target:commit:{target}' in prompt
+        return [
+            {'type': 'system', 'subtype': 'init', 'tools': ['Read', 'Grep', 'Glob'],
+             'mcp_servers': [], 'model': 'claude-model'},
+            {'type': 'result', 'is_error': False, 'result': 'PASS', 'session_id': 'session'},
+        ]
+
+    monkeypatch.setattr(launch, 'run_process', run)
+    args = SimpleNamespace(repo=repo, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='d' * 40, target=target, model=None, depth='lite', resume=None,
+                           goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+    result = launch.review(args)
+    assert result['target'] == f'commit:{target}'
+    assert json.loads((Path(result['runtime']) / 'session.json').read_text())['target'] == result['target']
+
+
+def test_v2_prepare_normalizes_bare_target_in_packet_and_result(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    target = 'e' * 64
+    identity = {'reviewer_sha': 'b' * 40, 'skill_identity': 'c' * 64}
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('LEAN_REVIEW_RUNTIME_ADAPTER', 'opencode')
+    monkeypatch.setenv('LEAN_REVIEW_CURRENT_MODEL', 'vendor/model')
+    monkeypatch.setattr(launch, 'reviewer_identity', lambda: identity)
+    args = SimpleNamespace(repo=repo, artifact=artifact,
+                           sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                           base='d' * 40, target=target, model=None, depth='strict', resume=None,
+                           goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+    prepared = launch.v2_prepare(args)
+    canonical_target = f'commit:{target}'
+    assert prepared['target'] == canonical_target
+    assert f'target:{canonical_target}' in prepared['packet']
+    assert json.loads((Path(prepared['runtime']) / 'pending.json').read_text())['target'] == canonical_target
+    result = launch.v2_finish(Path(prepared['runtime']), {'session': 'ses-reviewer', 'verdict': 'PASS', **identity})
+    assert result['target'] == canonical_target
+
+
+def test_both_review_entrypoints_reject_ambiguous_targets_before_runtime(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    artifact = repo / 'diff.patch'
+    artifact.write_text('exact reviewed bytes')
+    monkeypatch.setattr(launch, 'run_process', lambda *args: pytest.fail('unexpected reviewer call'))
+    for target in ('abc1234', 'main', 'v1.0', 'HEAD', 'refs/heads/main', 'broken'):
+        args = SimpleNamespace(repo=repo, artifact=artifact,
+                               sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                               base='d' * 40, target=target, model=None, depth='lite', resume=None,
+                               goal='test', requirements='test', task_paths='diff.patch', evidence='test')
+        for entrypoint in (launch.review, launch.v2_prepare):
+            with pytest.raises(launch.Blocked, match='target'):
+                entrypoint(args)
+
+
 def test_codex_effective_writable_session_rejected(tmp_path):
     path = tmp_path / 'codex/sessions/run.jsonl'
     path.parent.mkdir(parents=True)

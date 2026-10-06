@@ -51,6 +51,9 @@ its hash, creates a private immutable copy, sends the entire artifact as review
 data, and binds its JSON result to the exact digest/base/target. It does not
 create or infer a diff for you. Treat findings as exit 2 and **BLOCKED** as exit 1;
 exit 0 requires exactly **PASS**. A CLI exit code alone is never PASS.
+For a commit target, a full lowercase 40- or 64-character SHA may be passed
+directly; results and evidence normalize it to `commit:<SHA>`. Short SHAs and
+mutable refs remain blocked.
 Every result includes `reviewer_sha` (the full commit of the clean canonical Git
 checkout) and `skill_identity`. Resumes require the same pair; OpenCode V2 also
 blocks before its reviewer model call when the loaded plugin and PATH launcher
