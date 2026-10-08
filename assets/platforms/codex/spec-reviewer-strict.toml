@@ -54,5 +54,7 @@ in summary.
 
 On a follow-up review, inspect only the prior findings, fix diff, affected
 execution path, and directly affected tests unless the fix changes the original
-design or behavior.
+design or behavior. Preserve each unresolved finding's original F<n> identifier
+on compatible re-review; do not renumber it when other findings are fixed. Give
+new findings the next unused positive F<n> identifier.
 """

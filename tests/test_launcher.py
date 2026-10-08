@@ -437,14 +437,19 @@ def test_codex_structured_verdict_and_prompt_use_six_field_findings():
     template = ('F<n> | Critical|Important | path::symbol | violated contract item | evidence | '
                 'smallest required correction')
     for depth in ('lite', 'strict'):
-        lines = (ROOT / f'assets/platforms/codex/spec-reviewer-{depth}.toml').read_text().splitlines()
+        prompt = (ROOT / f'assets/platforms/codex/spec-reviewer-{depth}.toml').read_text()
+        lines = prompt.splitlines()
         assert any(line.strip() == template and line.count(' | ') == 5 for line in lines)
+        assert "Preserve each unresolved finding's original F<n> identifier" in prompt
 
     assert launch.codex_review_outcome(codex_outcome_text())[0] == 'PASS'
     assert launch.codex_review_outcome(codex_outcome_text(
         'NEEDS_EVIDENCE', needs_evidence=['show exact SHA']))[0] == 'NEEDS_EVIDENCE | show exact SHA'
     finding = 'F1 | Important | adapters/runtime.py::review | contract | evidence | correction'
     assert launch.codex_review_outcome(codex_outcome_text('FINDING', findings=[finding]))[0] == finding
+    resumed_findings = [finding, finding.replace('F1 |', 'F2 |'), finding.replace('F1 |', 'F5 |')]
+    assert launch.codex_review_outcome(
+        codex_outcome_text('FINDING', findings=resumed_findings))[1]['findings'] == resumed_findings
     five_field_finding = 'F1 | Important | adapters/runtime.py::review | contract | evidence'
     for raw in (
         'PASS — explanation',
@@ -453,6 +458,9 @@ def test_codex_structured_verdict_and_prompt_use_six_field_findings():
         codex_outcome_text('NEEDS_EVIDENCE', needs_evidence=['line one\nline two']),
         codex_outcome_text('FINDING', findings=['not canonical']),
         codex_outcome_text('FINDING', findings=[five_field_finding]),
+        codex_outcome_text('FINDING', findings=[finding, finding]),
+        codex_outcome_text('FINDING', findings=[finding.replace('F1 |', 'F0 |')]),
+        codex_outcome_text('FINDING', findings=[finding.replace('F1 |', 'Fone |')]),
         codex_outcome_text('FINDING', findings=['F1 | Important |  |  |  | ']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py | contract | evidence | correction']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence | correction | extra']),
