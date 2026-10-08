@@ -43,8 +43,7 @@ Return only the structured review outcome required by the caller's output schema
 Use verdict PASS with empty needs_evidence and findings. Use NEEDS_EVIDENCE with
 one or more concise needs_evidence strings and no findings. Use FINDING with no
 needs_evidence and one or more canonical finding strings:
-F<n> | Critical|Important | path::symbol | violated contract item | evidence |
-smallest required correction
+F<n> | Critical|Important | path::symbol | violated contract item | evidence | smallest required correction
 Use summary only for optional explanatory prose; never encode the machine verdict
 in summary.
 

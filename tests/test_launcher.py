@@ -433,18 +433,26 @@ def test_codex_effective_writable_session_rejected(tmp_path):
         launch.codex_result(events, tmp_path)
 
 
-def test_codex_structured_verdict_is_machine_readable_and_fail_closed():
+def test_codex_structured_verdict_and_prompt_use_six_field_findings():
+    template = ('F<n> | Critical|Important | path::symbol | violated contract item | evidence | '
+                'smallest required correction')
+    for depth in ('lite', 'strict'):
+        lines = (ROOT / f'assets/platforms/codex/spec-reviewer-{depth}.toml').read_text().splitlines()
+        assert any(line.strip() == template and line.count(' | ') == 5 for line in lines)
+
     assert launch.codex_review_outcome(codex_outcome_text())[0] == 'PASS'
     assert launch.codex_review_outcome(codex_outcome_text(
         'NEEDS_EVIDENCE', needs_evidence=['show exact SHA']))[0] == 'NEEDS_EVIDENCE | show exact SHA'
     finding = 'F1 | Important | adapters/runtime.py::review | contract | evidence | correction'
     assert launch.codex_review_outcome(codex_outcome_text('FINDING', findings=[finding]))[0] == finding
+    five_field_finding = 'F1 | Important | adapters/runtime.py::review | contract | evidence'
     for raw in (
         'PASS — explanation',
         codex_outcome_text('PASS', findings=[finding]),
         codex_outcome_text('NEEDS_EVIDENCE'),
         codex_outcome_text('NEEDS_EVIDENCE', needs_evidence=['line one\nline two']),
         codex_outcome_text('FINDING', findings=['not canonical']),
+        codex_outcome_text('FINDING', findings=[five_field_finding]),
         codex_outcome_text('FINDING', findings=['F1 | Important |  |  |  | ']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py | contract | evidence | correction']),
         codex_outcome_text('FINDING', findings=['F1 | Important | adapters/runtime.py::review | contract | evidence | correction | extra']),
