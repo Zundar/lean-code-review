@@ -204,12 +204,15 @@ def codex_review_outcome(raw: str) -> tuple[str, dict]:
     if verdict == 'FINDING':
         if needs or not findings:
             raise Blocked('Codex reviewer returned contradictory structured verdict')
-        for index, finding in enumerate(findings, 1):
+        finding_ids = set()
+        for finding in findings:
             if '\n' in finding or '\r' in finding or finding.count(' | ') != 5:
                 raise Blocked('Codex reviewer returned malformed finding')
             parts = finding.split(' | ', 5)
-            if len(parts) != 6 or parts[0] != f'F{index}' or parts[1] not in ('Critical', 'Important'):
+            if (len(parts) != 6 or not re.fullmatch(r'F[1-9][0-9]*', parts[0])
+                    or parts[0] in finding_ids or parts[1] not in ('Critical', 'Important')):
                 raise Blocked('Codex reviewer returned malformed finding')
+            finding_ids.add(parts[0])
             path, separator, symbol = parts[2].partition('::')
             if (any(part != part.strip() for part in parts)
                     or not separator or not path or not symbol
